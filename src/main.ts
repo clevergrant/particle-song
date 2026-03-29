@@ -477,9 +477,7 @@ async function init() {
     new URLSearchParams(location.search).has("wallpaper")
   ) {
     // @ts-ignore — wallpaper-engine is gitignored; only exists locally
-    const { init: initBridge } = await import(
-      /* @vite-ignore */ "../wallpaper-engine/bridge"
-    );
+    const { init: initBridge } = await import(/* @vite-ignore */ "../wallpaper-engine/bridge");
     initBridge();
   }
 }
