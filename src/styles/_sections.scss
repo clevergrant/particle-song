@@ -1,0 +1,54 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid $border-subtle;
+  border-radius: $radius-md;
+  overflow: visible;
+}
+
+.settings-section-header {
+  @include category-heading;
+  display: flex;
+  align-items: center;
+  gap: $sp-3;
+  padding: $sp-4 $sp-5;
+  background: $surface-1;
+  cursor: pointer;
+  user-select: none;
+  transition: background $transition-normal, color $transition-normal;
+
+  &:hover { background: $surface-3; color: #bbb; }
+
+  &::before {
+    content: "\25B6";
+    font-size: $sp-4;
+    transition: transform $transition-slow $transition-ease;
+    flex-shrink: 0;
+  }
+}
+
+.settings-section.open > .settings-section-header::before {
+  transform: rotate(90deg);
+}
+
+.settings-section-body {
+  display: none;
+  flex-direction: column;
+  gap: $sp-5;
+  padding: $sp-5;
+}
+
+.settings-section.open > .settings-section-body {
+  display: flex;
+}
+
+.settings-subsection-header {
+  @include category-heading;
+  padding: $sp-2 0 $sp-1;
+  border-bottom: 1px solid $border-subtle;
+  margin-bottom: $sp-1;
+}

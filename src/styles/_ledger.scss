@@ -1,0 +1,74 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+// Panel chrome is in _panels.scss — this file covers ledger content only.
+
+.ledger-heading {
+  @include category-heading;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $sp-2;
+  font-family: $font-system;
+}
+
+.ledger-row {
+  display: flex;
+  align-items: center;
+  gap: $sp-3;
+  padding: $sp-1 0;
+  line-height: 1.4;
+}
+
+.ledger-dot {
+  display: inline-block;
+  width: $sp-4;
+  height: $sp-4;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px currentColor;
+}
+
+.ledger-count {
+  margin-left: auto;
+  color: $text-primary;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-likelihood {
+  margin-left: auto;
+  width: 1.4em;
+  height: 1.4em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: $text-primary;
+}
+
+.ledger-mute {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: $font-base;
+  padding: 0 $sp-1;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity $transition-normal;
+
+  &:hover { opacity: 1; }
+  &.muted { opacity: 0.9; }
+}
+
+.ledger-unmute-all {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: $font-base;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity $transition-normal;
+
+  &:hover { opacity: 1; }
+}

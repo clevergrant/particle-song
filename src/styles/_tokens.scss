@@ -1,0 +1,96 @@
+// ── Surfaces ──
+$surface-base:       #0a0a0a;
+$surface-1:          #1a1a1a;
+$surface-2:          #1e1e1e;
+$surface-3:          #222;
+$surface-input:      #111;
+$surface-panel:      rgba(20, 20, 20, 0.85);
+$surface-panel-dense: rgba(20, 20, 20, 0.95);
+$surface-overlay:    rgba(255, 255, 255, 0.06);
+$surface-overlay-hover: rgba(255, 255, 255, 0.08);
+
+// ── Borders ──
+$border-subtle:  #2a2a2a;
+$border-input:   #444;
+$border-hover:   #666;
+$border-strong:  #888;
+
+// ── Text ──
+$text-primary:   #e0e0e0;
+$text-secondary: #ccc;
+$text-muted:     #999;
+$text-faint:     #666;
+$text-dim:       #555;
+
+// ── Accents (blue) ──
+$accent:         #3a7bd5;
+$accent-light:   #5b9bd5;
+$accent-hover:   #7ab8e0;
+$accent-teal:    #7abecc;
+$accent-bg:      #1a2a3a;
+$accent-bg-2:    #1a4a7a;
+$accent-bg-hover: #1e5590;
+$accent-border:  #2a4a6a;
+
+// ── Action colors ──
+$action-bg:      #1e2a3a;
+$action-border:  #2a4a6a;
+$action-text:    #6aa;
+$action-bg-hover: #253a50;
+$action-border-hover: #3a6a8a;
+$action-text-hover:   #8cc;
+
+// ── Success ──
+$success:        #4caf50;
+
+// ── Warning ──
+$warning:        #ffeb3b;
+
+// ── Danger ──
+$danger:         #f44336;
+$danger-text:    #f88;
+$danger-bg:      #400;
+$danger-bg-hover: #2a1a1a;
+$danger-border:  #a44;
+
+// ── Toggle knob ──
+$toggle-track:   #333;
+$toggle-track-hover: #3a3a3a;
+$toggle-knob:    #888;
+
+// ── Spacing scale ──
+$sp-1: 2px;
+$sp-2: 4px;
+$sp-3: 6px;
+$sp-4: 8px;
+$sp-5: 10px;
+$sp-6: 12px;
+$sp-7: 16px;
+
+// ── Border radii ──
+$radius-xs:  2px;
+$radius-sm:  4px;
+$radius-md:  6px;
+$radius-lg:  8px;
+$radius-xl: 10px;
+
+// ── Font sizes ──
+$font-2xs:  9px;
+$font-xs:  10px;
+$font-sm:  11px;
+$font-base: 12px;
+$font-md:  13px;
+$font-lg:  14px;
+
+// ── Font stacks ──
+$font-system: system-ui, -apple-system, sans-serif;
+$font-mono:   "Ubuntu Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+
+// ── Transitions ──
+$transition-fast:   0.12s;
+$transition-normal: 0.15s;
+$transition-slow:   0.2s;
+$transition-ease:   ease;
+
+// ── Backdrop ──
+$backdrop-blur: blur(8px);

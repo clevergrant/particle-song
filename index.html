@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Particle Simulations</title>
+    <!-- CSS is now loaded via Vite imports in main.ts -->
+  </head>
+  <body>
+    <!-- Legacy controls wrapper (used by buildControls fallback) -->
+    <div id="controls-wrapper" class="empty">
+      <div id="controls"></div>
+    </div>
+    <!-- Ledger panels (referenced by initLedger in basic-particles) -->
+    <div id="ledger-panels" class="ledger-panels">
+      <div id="ledger-organelles" class="ledger-panel"></div>
+      <div id="ledger-organisms" class="ledger-panel"></div>
+      <div id="ledger-predictions" class="ledger-panel"></div>
+    </div>
+    <div id="canvas-container">
+      <canvas id="canvas"></canvas>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

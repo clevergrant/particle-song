@@ -1,0 +1,75 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+.force-matrix-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $sp-3;
+}
+
+.force-matrix-header {
+  display: flex;
+  align-items: center;
+  gap: $sp-3;
+
+  label { flex: 1; }
+}
+
+.force-matrix-randomize,
+.force-matrix-clear {
+  @include action-button;
+  font-size: $font-sm;
+  padding: 3px $sp-4;
+}
+
+.force-matrix-grid {
+  display: inline-grid;
+  gap: $sp-1;
+  place-items: center;
+}
+
+.force-matrix-grid .force-matrix-header-cell {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  font-size: $font-xs;
+  color: $text-muted;
+}
+
+.force-matrix-swatch {
+  display: inline-block;
+  width: $sp-6;
+  height: $sp-6;
+  border-radius: 50%;
+}
+
+.force-matrix-cell {
+  width: 16px;
+  height: 16px;
+  background: $surface-1;
+  border: 1px solid #333;
+  border-radius: 3px;
+  color: $text-secondary;
+  padding: 0;
+  font-size: 0;
+  text-align: center;
+  cursor: ns-resize;
+  -moz-appearance: textfield;
+  box-sizing: border-box;
+
+  &::-webkit-outer-spin-button,
+  &::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  &:focus { @include input-focus; }
+}
+
+.force-matrix-auto-row {
+  display: flex;
+  align-items: center;
+  gap: $sp-3;
+}

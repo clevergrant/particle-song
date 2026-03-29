@@ -1,0 +1,171 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+// ── Settings panel wrapper ──
+
+#controls-wrapper {
+  position: fixed;
+  top: 60px;
+  left: $sp-6;
+  z-index: 1000;
+  transform: translateX(-85%);
+  transition: transform 0.3s $transition-ease;
+
+  &:not(.empty) #controls { padding-top: 36px; }
+  &:hover, &.pinned { transform: translateX(0); }
+  &.collapsed, &.empty { display: none; }
+}
+
+#pin-toggle {
+  position: absolute;
+  top: $sp-4;
+  right: $sp-4;
+  z-index: 1;
+  background: none;
+  border: none;
+  color: $text-dim;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: $font-lg;
+  line-height: 1;
+  border-radius: $radius-sm;
+  transition: background $transition-normal, color $transition-normal;
+
+  span {
+    display: inline-block;
+    transform: rotate(0deg);
+    transition: transform $transition-slow $transition-ease;
+  }
+
+  &:hover {
+    background: $surface-overlay-hover;
+    color: $text-muted;
+  }
+
+  &.active {
+    color: $accent-teal;
+    span { transform: rotate(-45deg); }
+  }
+}
+
+#controls {
+  @include panel;
+  @include scrollbar-hide;
+  width: 260px;
+  max-width: calc(100vw - 80px);
+  max-height: calc(100vh - 72px);
+  overflow-y: scroll;
+  display: flex;
+  flex-direction: column;
+  gap: $sp-6;
+}
+
+// ── Shader menu ──
+
+#shader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity $transition-slow;
+
+  &.open { opacity: 1; pointer-events: auto; }
+}
+
+#shader-menu {
+  @include panel($surface-panel-dense, $sp-4);
+  @include scrollbar-hide;
+  position: fixed;
+  top: 58px;
+  right: $sp-6;
+  z-index: 999;
+  width: 200px;
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: $sp-1;
+  transform: translateY(-$sp-4);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform $transition-slow $transition-ease, opacity $transition-slow $transition-ease;
+
+  &.open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+// ── Shader param panels ──
+
+.shader-param-panel {
+  @include panel($surface-panel-dense, $sp-4 $sp-5);
+  position: fixed;
+  top: 58px;
+  right: 220px;
+  z-index: 999;
+  width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: $sp-3;
+  transform: translateY(-$sp-4);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform $transition-slow $transition-ease, opacity $transition-slow $transition-ease;
+
+  &.open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+#shader-post-params { top: auto; }
+
+// ── Ledger panels ──
+
+#ledger-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity $transition-slow;
+
+  &.open { opacity: 1; pointer-events: auto; }
+}
+
+.ledger-panels {
+  position: fixed;
+  top: 58px;
+  right: $sp-6;
+  z-index: 999;
+  display: flex;
+  gap: $sp-4;
+  transform: translateY(-$sp-4);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform $transition-slow $transition-ease, opacity $transition-slow $transition-ease;
+
+  &.open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.ledger-panel {
+  @include panel($surface-panel-dense, $sp-4 $sp-6);
+  font-family: $font-mono;
+  font-size: $font-md;
+  color: #c0c0c0;
+  min-width: 80px;
+
+  &:empty { display: none; }
+}

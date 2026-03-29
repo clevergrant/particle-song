@@ -1,0 +1,76 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+.particle-types-section {
+  display: flex;
+  flex-direction: column;
+  gap: $sp-3;
+}
+
+.particle-type-row {
+  display: flex;
+  align-items: center;
+  gap: $sp-3;
+}
+
+.particle-card-delete {
+  background: none;
+  border: 1px solid $text-dim;
+  border-radius: $radius-sm;
+  color: $text-muted;
+  font-size: 16px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+
+  &:hover {
+    background: $danger-bg;
+    border-color: $danger-border;
+    color: $danger-text;
+  }
+}
+
+.particle-type-swatch {
+  width: 28px;
+  height: 24px;
+  border: 1px solid $border-input;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover { border-color: $border-strong; }
+}
+
+.particle-type-name {
+  @include input-base;
+  width: 80px;
+  min-width: 0;
+
+  &:focus { @include input-focus; }
+}
+
+.particle-type-count {
+  @include input-base;
+  width: 80px;
+  cursor: ns-resize;
+
+  &:focus { @include input-focus; }
+}
+
+.add-particle-btn {
+  @include action-button;
+  border-radius: $radius-md;
+  font-size: 24px;
+  line-height: 1;
+  padding: $sp-5;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

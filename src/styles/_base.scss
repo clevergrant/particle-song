@@ -1,0 +1,84 @@
+@use 'tokens' as *;
+
+:root {
+  // Surfaces
+  --surface-base: #{$surface-base};
+  --surface-1: #{$surface-1};
+  --surface-2: #{$surface-2};
+  --surface-3: #{$surface-3};
+  --surface-input: #{$surface-input};
+  --surface-panel: #{$surface-panel};
+  --surface-panel-dense: #{$surface-panel-dense};
+  --surface-overlay: #{$surface-overlay};
+  --surface-overlay-hover: #{$surface-overlay-hover};
+
+  // Borders
+  --border-subtle: #{$border-subtle};
+  --border-input: #{$border-input};
+  --border-hover: #{$border-hover};
+  --border-strong: #{$border-strong};
+
+  // Text
+  --text-primary: #{$text-primary};
+  --text-secondary: #{$text-secondary};
+  --text-muted: #{$text-muted};
+  --text-faint: #{$text-faint};
+  --text-dim: #{$text-dim};
+
+  // Accents
+  --accent: #{$accent};
+  --accent-light: #{$accent-light};
+  --accent-hover: #{$accent-hover};
+  --accent-teal: #{$accent-teal};
+  --accent-bg: #{$accent-bg};
+  --accent-bg-2: #{$accent-bg-2};
+  --accent-bg-hover: #{$accent-bg-hover};
+  --accent-border: #{$accent-border};
+
+  // Action
+  --action-bg: #{$action-bg};
+  --action-border: #{$action-border};
+  --action-text: #{$action-text};
+  --action-bg-hover: #{$action-bg-hover};
+  --action-border-hover: #{$action-border-hover};
+  --action-text-hover: #{$action-text-hover};
+
+  // Success / Warning / Danger
+  --success: #{$success};
+  --warning: #{$warning};
+  --danger: #{$danger};
+  --danger-text: #{$danger-text};
+  --danger-bg: #{$danger-bg};
+  --danger-bg-hover: #{$danger-bg-hover};
+  --danger-border: #{$danger-border};
+
+  // Toggle
+  --toggle-track: #{$toggle-track};
+  --toggle-track-hover: #{$toggle-track-hover};
+  --toggle-knob: #{$toggle-knob};
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: $surface-base;
+  color: $text-primary;
+  font-family: $font-system;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#canvas-container {
+  width: 100%;
+  height: 100vh;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

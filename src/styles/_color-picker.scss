@@ -1,0 +1,69 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+.color-picker-swatch {
+  width: 28px;
+  height: 24px;
+  border: 1px solid $border-input;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color $transition-normal;
+
+  &:hover { border-color: $border-strong; }
+}
+
+.color-picker-popup {
+  position: fixed;
+  z-index: 2000;
+  background: $surface-1;
+  border: 1px solid $border-input;
+  border-radius: $radius-lg;
+  padding: $sp-5;
+  display: flex;
+  flex-direction: column;
+  gap: $sp-3;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.7);
+  width: 200px;
+}
+
+.color-picker-preview {
+  height: 24px;
+  border-radius: $radius-sm;
+  border: 1px solid #333;
+}
+
+.color-picker-field-row {
+  display: flex;
+  gap: $sp-2;
+}
+
+.color-picker-field {
+  display: flex;
+  align-items: center;
+  gap: $sp-2;
+  flex: 1;
+}
+
+.color-picker-label {
+  font-size: $font-xs;
+  color: $text-faint;
+  min-width: 16px;
+  text-align: right;
+  user-select: none;
+}
+
+.color-picker-text {
+  flex: 1;
+  min-width: 0;
+  background: $surface-input;
+  border: 1px solid #333;
+  border-radius: $radius-sm;
+  color: $text-secondary;
+  padding: 3px 5px;
+  font-size: $font-sm;
+  font-family: monospace;
+  text-align: center;
+
+  &:focus { @include input-focus; }
+}

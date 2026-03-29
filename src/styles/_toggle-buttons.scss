@@ -1,0 +1,25 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+#settings-toggle {
+  @include toggle-button;
+  top: $sp-6;
+  left: $sp-6;
+  font-size: 18px;
+}
+
+#shader-toggle {
+  @include toggle-button;
+  top: $sp-6;
+  right: 60px;
+  font-size: $font-lg;
+  font-weight: 700;
+  font-family: $font-system;
+}
+
+#ledger-toggle {
+  @include toggle-button;
+  top: $sp-6;
+  right: 108px;
+  font-size: 16px;
+}

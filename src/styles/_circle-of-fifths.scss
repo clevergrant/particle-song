@@ -1,0 +1,31 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+.cof-container {
+  display: flex;
+  flex-direction: column;
+  gap: $sp-4;
+  align-items: center;
+}
+
+.cof-preset-row {
+  display: flex;
+  align-items: center;
+  gap: $sp-4;
+  width: 100%;
+}
+
+.cof-preset-label {
+  font-size: $font-base;
+  color: $text-muted;
+  flex-shrink: 0;
+}
+
+.cof-preset-select {
+  @include input-base;
+  flex: 1;
+  cursor: pointer;
+
+  &:focus { @include input-focus; }
+  option { background: $surface-1; color: $text-secondary; }
+}

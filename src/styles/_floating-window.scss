@@ -1,0 +1,8 @@
+@use 'tokens' as *;
+
+// Light-DOM styles for floating window content
+floating-window > div {
+  display: flex;
+  flex-direction: column;
+  gap: $sp-5;
+}

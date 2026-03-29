@@ -1,0 +1,37 @@
+@use 'tokens' as *;
+@use 'mixins' as *;
+
+// Panel chrome is in _panels.scss — this file covers menu items only.
+
+.shader-menu-category {
+  @include category-heading;
+  padding: $sp-3 $sp-4 $sp-1;
+}
+
+.shader-menu-item {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: $radius-md;
+  color: #bbb;
+  padding: $sp-3 $sp-5;
+  font-size: $font-md;
+  cursor: pointer;
+  text-align: left;
+  transition: background $transition-fast, border-color $transition-fast, color $transition-fast;
+  font-family: inherit;
+  width: 100%;
+
+  &:hover { background: $surface-2; color: $text-primary; }
+  &.active { background: $accent-bg; border-color: $accent; color: #fff; }
+}
+
+.shader-menu-divider {
+  height: 1px;
+  background: $border-subtle;
+  margin: $sp-2 0;
+}
+
+.shader-param-panel-title {
+  @include category-heading;
+  padding: $sp-1 0;
+}

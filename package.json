@@ -1,0 +1,19 @@
+{
+	"name": "particle-simulations",
+	"version": "0.0.1",
+	"type": "module",
+	"author": "Grant Perdue",
+	"license": "MIT",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc && vite build",
+		"build:wallpaper": "tsc && vite build && node wallpaper-engine/pack.mjs",
+		"preview": "vite preview"
+	},
+	"devDependencies": {
+		"@webgpu/types": "^0.1.69",
+		"sass": "^1.98.0",
+		"typescript": "^5.8.3",
+		"vite": "^6.3.0"
+	}
+}

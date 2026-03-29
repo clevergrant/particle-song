@@ -1,0 +1,119 @@
+@use 'tokens' as *;
+
+// ── Glass panel chrome ──
+@mixin panel($bg: $surface-panel, $padding: $sp-7) {
+  background: $bg;
+  backdrop-filter: $backdrop-blur;
+  -webkit-backdrop-filter: $backdrop-blur;
+  border: 1px solid $border-subtle;
+  border-radius: $radius-xl;
+  padding: $padding;
+}
+
+// ── Fixed toggle button (40×40) ──
+@mixin toggle-button {
+  position: fixed;
+  z-index: 1001;
+  background: $surface-2;
+  border: 1px solid $border-subtle;
+  border-radius: $radius-lg;
+  color: $text-primary;
+  width: 40px;
+  height: 40px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: background $transition-normal;
+
+  &:hover { background: #252525; }
+  &.hidden { display: none; }
+}
+
+// ── Shared input base ──
+@mixin input-base {
+  background: $surface-1;
+  border: 1px solid $border-input;
+  border-radius: $radius-sm;
+  color: $text-secondary;
+  padding: $sp-2 $sp-3;
+  font-size: $font-base;
+  font-family: inherit;
+}
+
+// ── Shared focus ring ──
+@mixin input-focus {
+  outline: none;
+  border-color: $accent;
+}
+
+// ── Uppercase category heading ──
+@mixin category-heading {
+  font-size: $font-xs;
+  font-weight: 600;
+  color: $text-faint;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+// ── Parameterized checkbox toggle switch ──
+@mixin checkbox-toggle($w: 36px, $h: 20px, $knob: $h - 4px) {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  width: $w;
+  height: $h;
+  min-width: $w;
+  background: $toggle-track;
+  border-radius: $h * 0.5;
+  border: none;
+  cursor: pointer;
+  transition: background $transition-slow $transition-ease;
+  flex-shrink: 0;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: $knob;
+    height: $knob;
+    background: $toggle-knob;
+    border-radius: 50%;
+    transition: transform $transition-slow $transition-ease, background $transition-slow $transition-ease;
+  }
+
+  &:checked {
+    background: $accent-bg-2;
+    &::after {
+      transform: translateX($w - $knob - 4px);
+      background: $accent-light;
+    }
+  }
+
+  &:hover { background: $toggle-track-hover; }
+  &:checked:hover { background: $accent-bg-hover; }
+}
+
+// ── Hide scrollbar cross-browser ──
+@mixin scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+// ── Action button (small, teal) ──
+@mixin action-button {
+  background: $action-bg;
+  border: 1px solid $action-border;
+  border-radius: $radius-sm;
+  color: $action-text;
+  cursor: pointer;
+
+  &:hover {
+    background: $action-bg-hover;
+    border-color: $action-border-hover;
+    color: $action-text-hover;
+  }
+}
