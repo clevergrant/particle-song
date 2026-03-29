@@ -166,7 +166,7 @@ function computeEnvelope(norms: EnvelopeNorms): EnvelopeParams {
   // Attack ← centroid speed × particle count, shortened for young organelles
   // Young (ageNorm≈0) → very short attack; older organisms stretch slightly (1.2×)
   const baseAttack = 0.02 + (1 - speedNorm) * 0.3 + countNorm * 0.2;
-  const attackDuration = baseAttack * ageNorm * 1.2;
+  const attackDuration = Math.max(0.01, baseAttack * ageNorm * 1.2);
 
   // Peak level ← speed × density, quieter for young organelles
   const peakLevel = (0.4 + speedNorm * 0.35 + densityNorm * 0.25) * (0.3 + 0.7 * ageNorm);
