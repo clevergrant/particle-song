@@ -473,10 +473,12 @@ async function init() {
 
   // Wallpaper Engine integration — hide UI and wire up property listener
   if (
-    window.wallpaperPropertyListener !== undefined ||
+    (window as any).wallpaperPropertyListener !== undefined ||
     new URLSearchParams(location.search).has("wallpaper")
   ) {
-    const { init: initBridge } = await import("../wallpaper-engine/bridge");
+    const { init: initBridge } = await import(
+      /* @vite-ignore */ "../wallpaper-engine/bridge"
+    );
     initBridge();
   }
 }
