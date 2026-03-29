@@ -112,6 +112,53 @@ export interface DetectionFrame {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Toroidal helpers                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Shortest signed displacement on a toroidal axis. */
+export function toroidalDelta(a: number, b: number, size: number): number {
+  let d = b - a;
+  const half = size * 0.5;
+  if (d > half) d -= size;
+  else if (d < -half) d += size;
+  return d;
+}
+
+/** Squared toroidal distance between two points. */
+function toroidalDistSq(
+  ax: number, ay: number, bx: number, by: number,
+  w: number, h: number,
+): number {
+  const dx = toroidalDelta(ax, bx, w);
+  const dy = toroidalDelta(ay, by, h);
+  return dx * dx + dy * dy;
+}
+
+/**
+ * Compute the toroidal centroid of a set of weighted points.
+ * Uses the first point as a reference and averages offsets from it.
+ */
+function toroidalCentroid(
+  xs: ArrayLike<number>, ys: ArrayLike<number>,
+  indices: ArrayLike<number>, count: number,
+  w: number, h: number,
+): { cx: number; cy: number } {
+  if (count === 0) return { cx: 0, cy: 0 };
+  const refX = xs[indices[0]];
+  const refY = ys[indices[0]];
+  let sumDx = 0, sumDy = 0;
+  for (let k = 0; k < count; k++) {
+    const idx = indices[k];
+    sumDx += toroidalDelta(refX, xs[idx], w);
+    sumDy += toroidalDelta(refY, ys[idx], h);
+  }
+  return {
+    cx: ((refX + sumDx / count) % w + w) % w,
+    cy: ((refY + sumDy / count) % h + h) % h,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Union-Find (path-splitting, rank-union)                            */
 /* ------------------------------------------------------------------ */
 
@@ -155,6 +202,8 @@ function ufUnion(parent: Uint32Array, rank: Uint8Array, a: number, b: number): v
 function buildOrganelleTree(
   organelleIds: ReadonlyArray<number>,
   organelleMap: ReadonlyMap<number, OrganelleState>,
+  width: number,
+  height: number,
 ): OrganelleTreeNode {
   const n = organelleIds.length;
   if (n === 0) throw new Error("Cannot build tree from empty organelle list");
@@ -187,9 +236,7 @@ function buildOrganelleTree(
     for (let v = 0; v < n; v++) {
       if (inMST[v]) continue;
       const ov = organelleMap.get(organelleIds[v])!;
-      const dx = ou.centroidX - ov.centroidX;
-      const dy = ou.centroidY - ov.centroidY;
-      const distSq = dx * dx + dy * dy;
+      const distSq = toroidalDistSq(ou.centroidX, ou.centroidY, ov.centroidX, ov.centroidY, width, height);
       if (distSq < minEdge[v]) {
         minEdge[v] = distSq;
         parent[v] = u;
@@ -226,6 +273,8 @@ function updateOrganelleTree(
   currentIds: ReadonlySet<number>,
   newIds: ReadonlyArray<number>,
   organelleMap: ReadonlyMap<number, OrganelleState>,
+  w: number,
+  h: number,
 ): OrganelleTreeNode | null {
   // Check if the tree is unchanged (all previous IDs still present, no new ones)
   const prevIds = collectTreeIds(prevTree);
@@ -241,7 +290,7 @@ function updateOrganelleTree(
   for (const newId of newIds) {
     const newOrg = organelleMap.get(newId);
     if (!newOrg) continue;
-    tree = attachToNearest(tree, newOrg, organelleMap);
+    tree = attachToNearest(tree, newOrg, organelleMap, w, h);
   }
 
   return tree;
@@ -290,6 +339,8 @@ function attachToNearest(
   tree: OrganelleTreeNode,
   newOrg: OrganelleState,
   organelleMap: ReadonlyMap<number, OrganelleState>,
+  w: number,
+  h: number,
 ): OrganelleTreeNode {
   // Find the closest existing node by centroid distance
   let bestId = tree.organelleId;
@@ -298,9 +349,7 @@ function attachToNearest(
   function search(node: OrganelleTreeNode) {
     const org = organelleMap.get(node.organelleId);
     if (org) {
-      const dx = org.centroidX - newOrg.centroidX;
-      const dy = org.centroidY - newOrg.centroidY;
-      const distSq = dx * dx + dy * dy;
+      const distSq = toroidalDistSq(org.centroidX, org.centroidY, newOrg.centroidX, newOrg.centroidY, w, h);
       if (distSq < bestDistSq) {
         bestDistSq = distSq;
         bestId = node.organelleId;
@@ -368,6 +417,8 @@ function detectOrganisms(
   config: DetectionConfig,
   forceMatrix: ForceMatrix,
   typeKeys: ReadonlyArray<string>,
+  width: number,
+  height: number,
 ): OrganismState[] {
   const orgCount = organelles.length;
   if (orgCount === 0) return [];
@@ -386,9 +437,7 @@ function detectOrganisms(
       const b = organelles[j];
       // Same-type organelles don't connect — organisms require cross-type bonds
       if (a.typeId === b.typeId) continue;
-      const dx = a.centroidX - b.centroidX;
-      const dy = a.centroidY - b.centroidY;
-      const distSq = dx * dx + dy * dy;
+      const distSq = toroidalDistSq(a.centroidX, a.centroidY, b.centroidX, b.centroidY, width, height);
       if (distSq >= proxRadSq) continue;
 
       const dvx = a.avgVelX - b.avgVelX;
@@ -454,20 +503,31 @@ function detectOrganisms(
     if (hasCrossType && affinity <= 0) continue;
 
     const typeSet = new Set<number>();
-    let cx = 0, cy = 0, total = 0;
+    let total = 0;
     const organelleIds: number[] = [];
     const crossTypeLinks = new Map<number, number>();
 
+    // Collect organelle data for toroidal centroid
+    const compOrgs: { cx: number; cy: number; w: number }[] = [];
     for (const oi of comp) {
       const org = organelles[oi];
       typeSet.add(org.typeId);
-      const w = org.particleIndices.length;
-      cx += org.centroidX * w;
-      cy += org.centroidY * w;
-      total += w;
+      const wt = org.particleIndices.length;
+      compOrgs.push({ cx: org.centroidX, cy: org.centroidY, w: wt });
+      total += wt;
       organelleIds.push(org.id);
       crossTypeLinks.set(org.id, crossTypeNeighborTypes[oi].size);
     }
+
+    // Toroidal weighted centroid using first organelle as reference
+    const ref = compOrgs[0];
+    let sumDx = 0, sumDy = 0;
+    for (const o of compOrgs) {
+      sumDx += toroidalDelta(ref.cx, o.cx, width) * o.w;
+      sumDy += toroidalDelta(ref.cy, o.cy, height) * o.w;
+    }
+    const cx = ((ref.cx + sumDx / total) % width + width) % width;
+    const cy = ((ref.cy + sumDy / total) % height + height) % height;
 
     const sig = Array.from(typeSet).sort((a, b) => a - b).join("+");
 
@@ -479,18 +539,18 @@ function detectOrganisms(
     if (prevTree) {
       const prevNodeIds = collectTreeIds(prevTree);
       const newIds = organelleIds.filter(id => !new Set(prevNodeIds).has(id));
-      const updated = updateOrganelleTree(prevTree, currentIdSet, newIds, organelleMap);
-      tree = updated ?? buildOrganelleTree(organelleIds, organelleMap);
+      const updated = updateOrganelleTree(prevTree, currentIdSet, newIds, organelleMap, width, height);
+      tree = updated ?? buildOrganelleTree(organelleIds, organelleMap, width, height);
     } else {
-      tree = buildOrganelleTree(organelleIds, organelleMap);
+      tree = buildOrganelleTree(organelleIds, organelleMap, width, height);
     }
 
     organisms.push({
       id: nextId++,
       organelleIds,
       colorSignature: sig,
-      centroidX: cx / total,
-      centroidY: cy / total,
+      centroidX: cx,
+      centroidY: cy,
       tree,
       crossTypeLinks,
     });
@@ -574,7 +634,7 @@ export function runDetection(
   const organelleHoldDuration = config.organelleLatchBeats * beatDuration;
 
   const { organelles, holdTimers } = detectOrganelles(data, prevFrame, config, dt, organelleHoldDuration);
-  const organisms = detectOrganisms(organelles, prevFrame, config, forceMatrix, typeKeys);
+  const organisms = detectOrganisms(organelles, prevFrame, config, forceMatrix, typeKeys, data.width, data.height);
   const ledger = buildLedger(organelles, organisms, prevFrame);
 
   return { organelles, organisms, holdTimers, ledger };
@@ -587,7 +647,7 @@ function detectOrganelles(
   dt: number,
   holdDuration: number,
 ): { organelles: OrganelleState[]; holdTimers: Map<number, number> } {
-  const { n, posX, posY, velX, velY, particleTypes, particleCells, cellHeads, cellNext, cols, rows } = data;
+  const { n, posX, posY, velX, velY, particleTypes, particleCells, cellHeads, cellNext, cols, rows, width, height } = data;
   const proxSq = config.proximityRadius * config.proximityRadius;
   const cohSq = config.coherenceThreshold * config.coherenceThreshold;
 
@@ -604,16 +664,14 @@ function detectOrganelles(
     const vxi = velX[i], vyi = velY[i];
 
     for (let dr = -1; dr <= 1; dr++) {
-      const nr = row + dr;
-      if (nr < 0 || nr >= rows) continue;
+      const nr = (row + dr + rows) % rows;
       for (let dc = -1; dc <= 1; dc++) {
-        const nc = col + dc;
-        if (nc < 0 || nc >= cols) continue;
+        const nc = (col + dc + cols) % cols;
         let j = cellHeads[nr * cols + nc];
         while (j !== -1) {
           if (j > i && particleTypes[j] === ti) {
-            const dx = posX[j] - px;
-            const dy = posY[j] - py;
+            const dx = toroidalDelta(px, posX[j], width);
+            const dy = toroidalDelta(py, posY[j], height);
             if (dx * dx + dy * dy < proxSq) {
               const dvx = velX[j] - vxi;
               const dvy = velY[j] - vyi;
@@ -651,18 +709,16 @@ function detectOrganelles(
     const px = posX[i], py = posY[i];
 
     for (let dr = -1; dr <= 1; dr++) {
-      const nr = row + dr;
-      if (nr < 0 || nr >= rows) continue;
+      const nr = (row + dr + rows) % rows;
       for (let dc = -1; dc <= 1; dc++) {
-        const nc = col + dc;
-        if (nc < 0 || nc >= cols) continue;
+        const nc = (col + dc + cols) % cols;
         let j = cellHeads[nr * cols + nc];
         while (j !== -1) {
           if (j !== i && particleTypes[j] === ti) {
             const rj = ufFind(parent, j);
             if ((rootSize.get(rj) ?? 0) >= minSize) {
-              const dx = posX[j] - px;
-              const dy = posY[j] - py;
+              const dx = toroidalDelta(px, posX[j], width);
+              const dy = toroidalDelta(py, posY[j], height);
               if (dx * dx + dy * dy < proxSq) {
                 // Merge small component into the large one
                 const oldRoot = ufFind(parent, i);
@@ -703,12 +759,10 @@ function detectOrganelles(
     if (indices.length < config.minOrganelleSize) continue;
 
     const typeId = particleTypes[indices[0]];
-    let cx = 0, cy = 0, vx = 0, vy = 0;
+    let vx = 0, vy = 0;
     let minCol = cols, maxCol = 0, minRow = rows, maxRow = 0;
 
     for (const idx of indices) {
-      cx += posX[idx];
-      cy += posY[idx];
       vx += velX[idx];
       vy += velY[idx];
       detectedNow.add(idx);
@@ -722,12 +776,14 @@ function detectOrganelles(
     }
 
     const len = indices.length;
+    const indicesArr = new Uint32Array(indices);
+    const { cx, cy } = toroidalCentroid(posX, posY, indicesArr, len, width, height);
     organelles.push({
       id: nextId++,
       typeId,
-      particleIndices: new Uint32Array(indices),
-      centroidX: cx / len,
-      centroidY: cy / len,
+      particleIndices: indicesArr,
+      centroidX: cx,
+      centroidY: cy,
       avgVelX: vx / len,
       avgVelY: vy / len,
       minCol, maxCol, minRow, maxRow,

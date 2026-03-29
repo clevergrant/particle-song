@@ -10,7 +10,7 @@
  * Pure functions — no side effects.
  */
 
-import type { ModeDefinition } from "./types";
+import type { ModeDefinition, TransitionChord } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Dissonance threshold                                               */
@@ -34,6 +34,8 @@ const DOM7: ChordTemplate    = { name: "dom7", offsets: [0, 4, 7, 10] };
 const DIM: ChordTemplate     = { name: "dim",  offsets: [0, 3, 6] };
 
 const CHORD_TEMPLATES: readonly ChordTemplate[] = [MAJOR, MINOR, DOM7, DIM];
+
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"] as const;
 
 /** A concrete candidate chord: root pitch class + quality + absolute pitch classes. */
 interface CandidateChord {
@@ -190,11 +192,12 @@ function scoreBridgeChord(
   const cpc = candidate.pitchClasses;
 
   // Voice-leading smoothness (lower distance = better, normalize to 0–1 score)
-  // Max possible distance for a triad ≈ 18 (3 notes × 6 semitones each)
+  // Normalize per-note (max 6 semitones each) so triads and 7th chords
+  // are scored on the same scale.
   const vlFromOutgoing = voiceLeadingDistance(outgoingTriad, cpc);
   const vlToIncoming = voiceLeadingDistance(cpc, incomingTriad);
-  const maxVL = 18;
-  const vlScore = 1 - (vlFromOutgoing + vlToIncoming) / (2 * maxVL);
+  const avgVL = (vlFromOutgoing / outgoingTriad.size + vlToIncoming / cpc.size) / 2;
+  const vlScore = 1 - avgVL / 6;
 
   // Common tones with both neighbors
   const ctOutgoing = commonToneCount(cpc, outgoingScale);
@@ -227,7 +230,7 @@ function selectBridgeChord(
   prevRoot: number,
   nextMode: ModeDefinition,
   nextRoot: number,
-): ReadonlySet<number> {
+): TransitionChord {
   const outgoingTriad = rootTriad(prevMode, prevRoot);
   const outgoingScale = pitchClassSet(prevMode, prevRoot);
   const incomingTriad = rootTriad(nextMode, nextRoot);
@@ -251,7 +254,10 @@ function selectBridgeChord(
     }
   }
 
-  return bestChord.pitchClasses;
+  return {
+    name: `${NOTE_NAMES[bestChord.root]} ${bestChord.template.name}`,
+    pitchClasses: bestChord.pitchClasses,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -277,8 +283,8 @@ export function computeTransitionBuffer(
   prevRoot: number,
   nextMode: ModeDefinition,
   nextRoot: number,
-  currentBuffer: ReadonlySet<number> | null = null,
-): ReadonlySet<number> | null {
+  currentBuffer: TransitionChord | null = null,
+): TransitionChord | null {
   const prevFull = pitchClassSet(prevMode, prevRoot);
   const incoming = pitchClassSet(nextMode, nextRoot);
 

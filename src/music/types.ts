@@ -202,6 +202,11 @@ export interface BassUpdate {
   readonly avgVelocity: number;
 }
 
+export interface TransitionChord {
+  readonly name: string;              // e.g. "G dom7"
+  readonly pitchClasses: ReadonlySet<number>;
+}
+
 export interface ScheduledBar {
   readonly barNumber: number;
   readonly startTime: number;        // AudioContext time
@@ -210,11 +215,12 @@ export interface ScheduledBar {
   readonly mode: ModeDefinition;
   readonly rootMidi: number;
   readonly isBufferBar: boolean;
-  readonly bufferPitchClasses: ReadonlySet<number> | null;
+  readonly bufferChord: TransitionChord | null;
   readonly bassUpdate: BassUpdate;
   readonly netStability: number;
   readonly spatialEntropy: number;
   readonly envelopeRanges: EnvelopeRanges;
+  readonly speciesCycle: SpeciesCycle;
 }
 
 /* ------------------------------------------------------------------ */
@@ -276,6 +282,16 @@ export interface EnvelopeRanges {
   readonly radiusMax: number;
 }
 
+/**
+ * Per-species round-robin cycle state.
+ * Tracks which organism IDs have played so far within each species.
+ * Once all have played, the set resets.
+ */
+export interface SpeciesCycle {
+  /** Species signature → set of organism registryIds that have already played. */
+  readonly played: ReadonlyMap<string, ReadonlySet<number>>;
+}
+
 export interface MusicState {
   readonly currentBarNumber: number;
   readonly currentMode: ModeDefinition;
@@ -283,6 +299,7 @@ export interface MusicState {
   readonly netStability: number;
   readonly prevScheduledBar: ScheduledBar | null;
   readonly isBufferBar: boolean;
-  readonly bufferPitchClasses: ReadonlySet<number> | null;
+  readonly bufferChord: TransitionChord | null;
   readonly envelopeRanges: EnvelopeRanges | null;
+  readonly speciesCycle: SpeciesCycle;
 }

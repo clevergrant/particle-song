@@ -22,9 +22,33 @@
 
 .bv-info {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   margin-bottom: $sp-3;
   line-height: 1;
+}
+
+.bv-play-btn {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  padding: 0;
+  margin-right: $sp-3;
+  flex-shrink: 0;
+  transition: background $transition-normal $transition-ease, color $transition-normal $transition-ease;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.22);
+    color: #fff;
+  }
 }
 
 .bv-track-wrapper {
@@ -92,6 +116,52 @@
   transform: translateX(-1.5px);
   box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
   transition: left 16ms linear;
+}
+
+.bv-controls-group {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: $sp-4;
+  flex-shrink: 0;
+}
+
+.bv-compact-input {
+  display: flex;
+  align-items: center;
+  gap: $sp-2;
+
+  input[type="number"] {
+    width: 42px;
+    height: 20px;
+    padding: 0 $sp-2;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: $radius-sm;
+    background: rgba(255, 255, 255, 0.06);
+    color: $text-primary;
+    font-family: $font-mono;
+    font-size: $font-2xs;
+    text-align: center;
+    outline: none;
+    -moz-appearance: textfield;
+
+    &::-webkit-inner-spin-button,
+    &::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    &:focus {
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+  }
+}
+
+.bv-compact-label {
+  font-size: $font-2xs;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $text-muted;
 }
 
 .bv-phrase-row {

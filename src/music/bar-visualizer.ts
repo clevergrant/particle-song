@@ -17,11 +17,13 @@ export interface BarVisualizerState {
   readonly barStartTime: number
   readonly barDuration: number
   readonly beatsPerBar: number
+  readonly bpm: number
   readonly now: number // AudioContext currentTime
   readonly groupColors: ReadonlyMap<string, readonly [number, number, number]>
   readonly typeKeys: readonly string[]
   readonly phraseBarInCycle: number // -1 if inactive
   readonly phraseSequenceLength: number // expanded sequence length
+  readonly phraseIndices: readonly number[] // maps sequence position → original cell index
 }
 
 /* ------------------------------------------------------------------ */
@@ -34,7 +36,10 @@ let scrubber: HTMLDivElement | null = null
 let beatLinesContainer: HTMLDivElement | null = null
 let dotsContainer: HTMLDivElement | null = null
 let infoLeft: HTMLSpanElement | null = null
-let infoRight: HTMLSpanElement | null = null
+let beatsInput: HTMLInputElement | null = null
+let bpmInput: HTMLInputElement | null = null
+let playBtn: HTMLButtonElement | null = null
+let isPlaying = false
 let phraseStrip: HTMLDivElement | null = null
 let phraseCells: HTMLDivElement[] = []
 let phraseMirrorCheckbox: HTMLInputElement | null = null
@@ -52,12 +57,32 @@ function ensureDOM(): void {
   // Info row
   const infoRow = document.createElement("div")
   infoRow.className = "bv-info"
+
+  playBtn = document.createElement("button")
+  playBtn.className = "bv-play-btn"
+  playBtn.innerHTML = PLAY_SVG
+  playBtn.addEventListener("click", () => {
+    isPlaying = !isPlaying
+    playBtn!.innerHTML = isPlaying ? PAUSE_SVG : PLAY_SVG
+    playOnToggle?.(isPlaying)
+  })
+  infoRow.appendChild(playBtn)
+
   infoLeft = document.createElement("span")
   infoLeft.className = "bv-info-left"
-  infoRight = document.createElement("span")
-  infoRight.className = "bv-info-right"
   infoRow.appendChild(infoLeft)
-  infoRow.appendChild(infoRight)
+
+  const controlsGroup = document.createElement("div")
+  controlsGroup.className = "bv-controls-group"
+
+  bpmInput = makeCompactInput("bpm", 90, 20, 300, 5, (v) => bpmOnChange?.(v))
+  controlsGroup.appendChild(bpmInput.parentElement!)
+
+  beatsInput = makeCompactInput("beats", 4, 2, 8, 1, (v) => beatsOnChange?.(v))
+  controlsGroup.appendChild(beatsInput.parentElement!)
+
+  infoRow.appendChild(controlsGroup)
+
   container.appendChild(infoRow)
 
   // Phrase strip row
@@ -180,21 +205,63 @@ function renderDots(
 /*  Phrase strip                                                       */
 /* ------------------------------------------------------------------ */
 
-const DENSITY_CYCLE: readonly BassDensity[] = ["W", "H", "Q", "E"]
+const DENSITY_CYCLE: readonly BassDensity[] = ["W", "H", "Q", "E", "X"]
 const DENSITY_GLYPH: Record<BassDensity, string> = {
   W: "\uD834\uDD5D",  // 𝅝  whole note
   H: "\uD834\uDD5E",  // 𝅗𝅥  half note
   Q: "\u2669",         // ♩  quarter note
   E: "\u266A",         // ♪  eighth note
+  X: "\u2715",         // ✕  disabled
 }
 const DENSITY_BG: Record<BassDensity, string> = {
   W: "rgba(255,255,255,0.08)",
   H: "rgba(255,255,255,0.14)",
   Q: "rgba(255,255,255,0.22)",
   E: "rgba(255,255,255,0.32)",
+  X: "rgba(255,255,255,0.03)",
 }
 
 let phraseOnChange: ((cells: readonly BassDensity[], mirror: boolean) => void) | null = null
+let playOnToggle: ((playing: boolean) => void) | null = null
+let beatsOnChange: ((beats: number) => void) | null = null
+let bpmOnChange: ((bpm: number) => void) | null = null
+
+const PLAY_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>`
+const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>`
+
+/** Register a callback for when the user toggles play/pause. */
+export function onPlayToggle(cb: (playing: boolean) => void): void {
+  playOnToggle = cb
+}
+
+/** Sync the play button state from external changes (e.g. the settings checkbox). */
+export function setPlayState(playing: boolean): void {
+  ensureDOM()
+  isPlaying = playing
+  if (playBtn) playBtn.innerHTML = playing ? PAUSE_SVG : PLAY_SVG
+}
+
+/** Register a callback for when the user changes beats per bar. */
+export function onBeatsChange(cb: (beats: number) => void): void {
+  beatsOnChange = cb
+}
+
+/** Sync the beats input from external changes. */
+export function setBeatsPerBar(beats: number): void {
+  ensureDOM()
+  if (beatsInput) beatsInput.value = String(beats)
+}
+
+/** Register a callback for when the user changes BPM. */
+export function onBpmChange(cb: (bpm: number) => void): void {
+  bpmOnChange = cb
+}
+
+/** Sync the BPM input from external changes. */
+export function setBpm(bpm: number): void {
+  ensureDOM()
+  if (bpmInput) bpmInput.value = String(bpm)
+}
 
 /** Register a callback for when the user edits the phrase strip. */
 export function onPhraseChange(
@@ -219,16 +286,18 @@ export function setPhraseStripCells(cells: readonly BassDensity[], mirror: boole
     cell.textContent = DENSITY_GLYPH[cells[i]]
     cell.style.background = DENSITY_BG[cells[i]]
 
-    cell.addEventListener("click", () => {
+    const cycleCell = (dir: 1 | -1) => {
       const cur = cell.dataset.density as BassDensity
-      const next = DENSITY_CYCLE[(DENSITY_CYCLE.indexOf(cur) + 1) % DENSITY_CYCLE.length]
+      const idx = DENSITY_CYCLE.indexOf(cur)
+      const next = DENSITY_CYCLE[((idx + dir) % DENSITY_CYCLE.length + DENSITY_CYCLE.length) % DENSITY_CYCLE.length]
       cell.dataset.density = next
       cell.textContent = DENSITY_GLYPH[next]
       cell.style.background = DENSITY_BG[next]
-      // Read back all cells
       const updated = phraseCells.map(c => c.dataset.density as BassDensity)
       phraseOnChange?.(updated, phraseMirrorCheckbox?.checked ?? false)
-    })
+    }
+    cell.addEventListener("click", () => cycleCell(1))
+    cell.addEventListener("contextmenu", (e) => { e.preventDefault(); cycleCell(-1) })
 
     phraseStrip.appendChild(cell)
     phraseCells.push(cell)
@@ -239,26 +308,61 @@ export function setPhraseStripCells(cells: readonly BassDensity[], mirror: boole
   }
 }
 
-function updatePhraseHighlight(barInCycle: number, seqLen: number): void {
+function updatePhraseHighlight(barInCycle: number, indices: readonly number[]): void {
   if (barInCycle === cachedPhraseActiveCell) return
   cachedPhraseActiveCell = barInCycle
 
-  // The barInCycle is within the expanded (possibly mirrored) sequence.
-  // Map it back to the cell index: if mirrored, second half maps backwards.
   const cellCount = phraseCells.length
   if (cellCount === 0) return
 
-  let cellIdx: number
-  if (seqLen > cellCount && barInCycle >= cellCount) {
-    // Mirrored half — map backwards
-    cellIdx = seqLen - 1 - barInCycle
-  } else {
-    cellIdx = barInCycle % cellCount
-  }
+  // Use the precomputed index mapping (handles X-filtered + mirrored sequences)
+  const cellIdx = barInCycle >= 0 && barInCycle < indices.length
+    ? indices[barInCycle]
+    : -1
 
   for (let i = 0; i < cellCount; i++) {
     phraseCells[i].classList.toggle("active", i === cellIdx)
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"] as const
+
+function midiToNoteName(midi: number): string {
+  return NOTE_NAMES[((midi % 12) + 12) % 12]
+}
+
+function makeCompactInput(
+  label: string, initial: number, min: number, max: number, step: number,
+  onChange: (v: number) => void,
+): HTMLInputElement {
+  const wrapper = document.createElement("div")
+  wrapper.className = "bv-compact-input"
+
+  const lbl = document.createElement("span")
+  lbl.className = "bv-compact-label"
+  lbl.textContent = label
+  wrapper.appendChild(lbl)
+
+  const input = document.createElement("input")
+  input.type = "number"
+  input.min = String(min)
+  input.max = String(max)
+  input.step = String(step)
+  input.value = String(initial)
+  input.addEventListener("change", () => {
+    let v = Number(input.value)
+    v = Math.round(v / step) * step
+    v = Math.max(min, Math.min(max, v))
+    input.value = String(v)
+    onChange(v)
+  })
+  wrapper.appendChild(input)
+
+  return input
 }
 
 /* ------------------------------------------------------------------ */
@@ -292,19 +396,23 @@ export function updateBarVisualizer(state: BarVisualizerState): void {
   }
 
   // Phrase strip highlight
-  updatePhraseHighlight(state.phraseBarInCycle, state.phraseSequenceLength)
+  updatePhraseHighlight(state.phraseBarInCycle, state.phraseIndices)
 
   // Info text
   if (infoLeft && scheduledBar) {
-    const barNum = scheduledBar.barNumber
+    const rootName = midiToNoteName(scheduledBar.rootMidi)
     const modeName = scheduledBar.mode.name
-    const bufferTag = scheduledBar.isBufferBar ? "  ·  transition" : ""
-    infoLeft.textContent = `Bar ${barNum + 1}  ·  ${modeName}${bufferTag}`
+    const bufferTag = scheduledBar.bufferChord
+      ? `  ·  ${scheduledBar.bufferChord.name}`
+      : ""
+    infoLeft.textContent = `${rootName}  ·  ${modeName}${bufferTag}`
   }
-  if (infoRight) {
-    const beatInBar = progress * beatsPerBar
-    const currentBeat = Math.floor(beatInBar) + 1
-    infoRight.textContent = `Beat ${currentBeat} / ${beatsPerBar}`
+  // Keep inputs in sync with current values
+  if (beatsInput && Number(beatsInput.value) !== beatsPerBar) {
+    beatsInput.value = String(beatsPerBar)
+  }
+  if (bpmInput && Number(bpmInput.value) !== state.bpm) {
+    bpmInput.value = String(state.bpm)
   }
 }
 

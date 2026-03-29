@@ -43,6 +43,12 @@ const BASS_INTERVAL_WEIGHTS: readonly number[] = [
   /* 12 octave  */ 0.8,
 ];
 
+/** Normalize a raw volume into the audible floor range [0.25, 1.0]. */
+function normalizeVolume(raw: number): number {
+  const clamped = Math.max(0, Math.min(1, raw));
+  return 0.25 + clamped * 0.75;
+}
+
 /** Semitone distance beyond which a leap should reverse direction. */
 const LEAP_RECOVERY_THRESHOLD = 7; // > P5
 
@@ -50,7 +56,7 @@ const LEAP_RECOVERY_THRESHOLD = 7; // > P5
 /*  Bass phrase density                                                */
 /* ------------------------------------------------------------------ */
 
-export type BassDensity = "W" | "H" | "Q" | "E";
+export type BassDensity = "W" | "H" | "Q" | "E" | "X";
 
 export const DEFAULT_PHRASE_CELLS: readonly BassDensity[] = [
   "W", "W", "W", "W", "H", "H", "H", "H", "Q", "Q", "E", "E",
@@ -60,8 +66,28 @@ export function expandPhrase(
   cells: readonly BassDensity[],
   mirror: boolean,
 ): readonly BassDensity[] {
-  if (!mirror || cells.length === 0) return cells;
-  return [...cells, ...[...cells].reverse()];
+  const enabled = cells.filter(c => c !== "X");
+  if (enabled.length === 0) return [];
+  if (!mirror) return enabled;
+  return [...enabled, ...[...enabled].reverse()];
+}
+
+/**
+ * Returns the original cell indices for each position in the expanded
+ * (filtered + optionally mirrored) phrase sequence.  Used by the
+ * bar-visualizer to highlight the correct cell in the strip.
+ */
+export function expandPhraseIndices(
+  cells: readonly BassDensity[],
+  mirror: boolean,
+): readonly number[] {
+  const indices: number[] = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] !== "X") indices.push(i);
+  }
+  if (indices.length === 0) return [];
+  if (!mirror) return indices;
+  return [...indices, ...[...indices].reverse()];
 }
 
 function notesForDensity(
@@ -74,6 +100,7 @@ function notesForDensity(
     case "H": return { notesPerBar: 2, noteDuration: barDur / 2 };
     case "Q": return { notesPerBar: beatsPerBar, noteDuration: barDur / beatsPerBar };
     case "E": return { notesPerBar: beatsPerBar * 2, noteDuration: barDur / (beatsPerBar * 2) };
+    case "X": return { notesPerBar: 0, noteDuration: 0 };
   }
 }
 
@@ -154,6 +181,12 @@ export class BassLayer {
   private phraseCycleOrigin: number | null = null;
   private prevHadOrganisms = false;
 
+  /* ── Arpeggio dynamics state ─────────────────────────────────────── */
+  /** Previous pluck volume for smoothing consecutive note dynamics. */
+  private prevPluckVolume = -1;
+  /** Maximum volume change between consecutive bass notes (fraction of 1). */
+  private readonly maxVolumeDelta = 0.15;
+
   /* ── Quartal stack state ────────────────────────────────────────── */
   private quartalVoices: QuartalVoice[] = [];
   private quartalActive = false;
@@ -173,6 +206,7 @@ export class BassLayer {
     this.teardownQuartalVoices();
     this.phraseCycleOrigin = null;
     this.prevHadOrganisms = false;
+    this.prevPluckVolume = -1;
     this.output?.disconnect();
     this.output = null;
     this.ctx = null;
@@ -230,6 +264,7 @@ export class BassLayer {
     // ── Deactivate quartal stack if organisms just appeared ───────
     if (this.quartalActive) {
       this.deactivateQuartalStack(barStart);
+      this.prevPluckVolume = -1; // reset dynamics smoothing for fresh arpeggio
     }
 
     // ── Phrase cycle: reset origin on organism appearance ─────────
@@ -539,7 +574,15 @@ export class BassLayer {
 
     // Amplitude envelope from editor shape
     const env = this.ctx.createGain();
-    const volume = note.freePercent * sociabilityGain(note.sociability);
+    let volume = normalizeVolume(note.freePercent * sociabilityGain(note.sociability));
+
+    // Smooth dynamics: clamp volume to within maxVolumeDelta of previous note
+    if (this.prevPluckVolume >= 0) {
+      const lo = this.prevPluckVolume - this.maxVolumeDelta;
+      const hi = this.prevPluckVolume + this.maxVolumeDelta;
+      volume = Math.max(lo, Math.min(hi, volume));
+    }
+    this.prevPluckVolume = volume;
 
     // Staccato: higher average velocity → shorter gate relative to slot.
     // Normalize velocity to [0,1] then look up staccato amount from the curve LUT.

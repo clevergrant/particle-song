@@ -17,6 +17,7 @@ import type {
   NoteDuration,
   EnvelopeParams,
   EnvelopeRanges,
+  TransitionChord,
 } from "./types";
 
 import { computeNetStability } from "./stability";
@@ -260,22 +261,22 @@ export function scheduleBar(
 
   // ── Transition buffer check ───────────────────────────────────────
   let isBufferBar = false;
-  let bufferPitchClasses: ReadonlySet<number> | null = null;
+  let bufferChord: TransitionChord | null = null;
 
   if (prevState) {
-    bufferPitchClasses = computeTransitionBuffer(
+    bufferChord = computeTransitionBuffer(
       prevState.currentMode,
       prevState.currentRootMidi % 12,
       mode,
       rootSemitone,
-      prevState.bufferPitchClasses,
+      prevState.bufferChord,
     );
-    isBufferBar = bufferPitchClasses !== null;
+    isBufferBar = bufferChord !== null;
   }
 
   // ── Active pitch classes for this bar ─────────────────────────────
-  const activePitchClasses = isBufferBar && bufferPitchClasses
-    ? bufferPitchClasses
+  const activePitchClasses = isBufferBar && bufferChord
+    ? bufferChord.pitchClasses
     : pitchClassSet(mode, rootSemitone);
 
   // ── Timbre (sociability → waveform) ───────────────────────────────
@@ -592,10 +593,11 @@ export function scheduleBar(
     mode,
     rootMidi,
     isBufferBar,
-    bufferPitchClasses,
+    bufferChord,
     bassUpdate,
     netStability,
     spatialEntropy: globalMetrics.spatialEntropy,
     envelopeRanges: blendedRanges,
+    speciesCycle: prevState?.speciesCycle ?? { played: new Map() },
   };
 }

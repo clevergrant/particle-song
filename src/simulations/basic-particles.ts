@@ -4,6 +4,7 @@ import { CurveEditor } from "../curve-editor"
 import {
 	DEFAULT_DETECTION_CONFIG,
 	runDetection,
+	toroidalDelta,
 	updateRegistry,
 	type DetectionConfig,
 	type DetectionFrame,
@@ -30,7 +31,13 @@ import type { VuMeter } from "../ui/widgets/vu-meter"
 import { AudioGraph } from "../music/audio-graph"
 import {
 	hideBarVisualizer,
+	onBeatsChange,
+	onBpmChange,
+	onPlayToggle,
 	onPhraseChange,
+	setBeatsPerBar,
+	setBpm,
+	setPlayState,
 	setPhraseStripCells,
 	showBarVisualizer,
 	updateBarVisualizer,
@@ -39,6 +46,7 @@ import {
 	BassLayer,
 	DEFAULT_PHRASE_CELLS,
 	expandPhrase,
+	expandPhraseIndices,
 	type BassDensity,
 } from "../music/bass-layer"
 import { computeGlobalMetrics } from "../music/global-metrics"
@@ -47,7 +55,6 @@ import { applyVoiceBudget } from "../music/voice-budget"
 import {
 	barDuration,
 	barStartTime as barStartTimeFn,
-	checkBarBoundary,
 } from "../music/timing"
 import type {
 	BarSnapshot,
@@ -428,7 +435,6 @@ export class RandomDots implements Simulation {
 	private musicTimeMultiplier = 1
 	private musicBeatsPerBar = 4
 	private overtonePhaseRate = 1
-	private qualificationFraction = 0.5
 	private preferNiceModes = false
 	private phrasePattern: BassDensity[] = [...DEFAULT_PHRASE_CELLS]
 	private phraseMirror = false
@@ -923,7 +929,9 @@ export class RandomDots implements Simulation {
 		// Swap ping-pong
 		this.pingPong = 1 - this.pingPong
 
-		// Bar-boundary music scheduling (§3.1)
+		// Bar-boundary music scheduling — lookahead pattern (§3.1).
+		// Schedule the upcoming bar BEFORE it starts so all hit times
+		// are in the future and the audio thread can process them on time.
 		if (this.audioGraph.isEnabled) {
 			const barDur = barDuration(
 				this.musicBpm,
@@ -931,30 +939,31 @@ export class RandomDots implements Simulation {
 				this.musicTimeMultiplier,
 			)
 			const now = this.audioGraph.currentTime
-			const newBar = checkBarBoundary(
-				this.tSoundStart,
-				this.musicBarNumber,
-				now,
-				barDur,
-			)
 
-			if (newBar !== null && this.detectionState && this.latestGlobalMetrics) {
-				this.musicBarNumber = newBar
-				const barStart = barStartTimeFn(this.tSoundStart, newBar, barDur)
+			// Lookahead: schedule the next bar when its start is within
+			// 100ms of now.  This gives the audio thread ~100ms of lead
+			// time to prepare all voices before the first hit plays.
+			const nextBar = this.musicBarNumber + 1
+			const nextBarStart = barStartTimeFn(this.tSoundStart, nextBar, barDur)
+			const SCHEDULE_AHEAD = 0.1
+
+			if (now + SCHEDULE_AHEAD >= nextBarStart && this.detectionState && this.latestGlobalMetrics) {
+				this.musicBarNumber = nextBar
+				const barStart = nextBarStart
 
 				// Build snapshot from detection state
 				const snapshot = this.buildBarSnapshot()
 
 				const config: ScheduleConfig = {
 					barsPerPhase: this.overtonePhaseRate,
-					qualificationFraction: this.qualificationFraction,
+					qualificationFraction: 0.5,
 					preferNiceModes: this.preferNiceModes,
 					beatsPerBar: this.musicBeatsPerBar,
 				}
 
 				const scheduled = scheduleBar(
 					snapshot,
-					newBar,
+					nextBar,
 					barStart,
 					barDur,
 					this.musicState,
@@ -981,7 +990,7 @@ export class RandomDots implements Simulation {
 
 				// Auto-randomize one bar before phrase cycle restarts, so the
 				// transition bar resolves before the bass sequence begins anew.
-				const { idx: phraseIdx, len: phraseLen } = this.phrasePosition(newBar)
+				const { idx: phraseIdx, len: phraseLen } = this.phrasePosition(nextBar)
 				if (phraseLen > 0 && phraseIdx === phraseLen - 2) {
 					if (this.autoRandomizeMatrixEnabled) {
 						const arTypes = this.getTypeIds()
@@ -1006,14 +1015,15 @@ export class RandomDots implements Simulation {
 
 				// Update music state for next bar
 				this.musicState = {
-					currentBarNumber: newBar,
+					currentBarNumber: nextBar,
 					currentMode: scheduled.mode,
 					currentRootMidi: scheduled.rootMidi,
 					netStability: scheduled.netStability,
 					prevScheduledBar: scheduled,
 					isBufferBar: scheduled.isBufferBar,
-					bufferPitchClasses: scheduled.bufferPitchClasses,
+					bufferChord: scheduled.bufferChord,
 					envelopeRanges: scheduled.envelopeRanges,
+					speciesCycle: scheduled.speciesCycle,
 				}
 				this.currentScheduledBar = culled
 			}
@@ -1043,6 +1053,10 @@ export class RandomDots implements Simulation {
 				this.phrasePattern,
 				this.phraseMirror,
 			)
+			const phraseIdxMap = expandPhraseIndices(
+				this.phrasePattern,
+				this.phraseMirror,
+			)
 			const seqLen = phraseSeqExpanded.length
 			const cycleOrigin = this.bassLayer.cycleOrigin
 			const phraseBarInCycle =
@@ -1054,11 +1068,13 @@ export class RandomDots implements Simulation {
 				barStartTime: bvBarStart,
 				barDuration: bvBarDur,
 				beatsPerBar: this.musicBeatsPerBar,
+				bpm: this.musicBpm,
 				now: bvNow,
 				groupColors: this.groupColors,
 				typeKeys: this.getTypeIds(),
 				phraseBarInCycle,
 				phraseSequenceLength: seqLen,
+				phraseIndices: phraseIdxMap,
 			})
 		}
 
@@ -4245,8 +4261,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				const osmB = osmIdByOrganelle[j]
 				if (osmA === 0 || osmA !== osmB) continue
 				if (a.typeId === b.typeId) continue
-				const dx = a.centroidX - b.centroidX
-				const dy = a.centroidY - b.centroidY
+				const dx = toroidalDelta(a.centroidX, b.centroidX, this.width)
+				const dy = toroidalDelta(a.centroidY, b.centroidY, this.height)
 				if (dx * dx + dy * dy >= proxRadSq) continue
 				const dvx = a.avgVelX - b.avgVelX
 				const dvy = a.avgVelY - b.avgVelY
@@ -4274,11 +4290,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		const f32 = new Float32Array(data)
 		const u32 = new Uint32Array(data)
 
+		const w = this.width
+		const h = this.height
 		for (let i = 0; i < snap.length; i++) {
 			const s = snap[i]
 			const off = i * 4
-			f32[off + 0] = s.cx + s.vx * dt
-			f32[off + 1] = s.cy + s.vy * dt
+			f32[off + 0] = ((s.cx + s.vx * dt) % w + w) % w
+			f32[off + 1] = ((s.cy + s.vy * dt) % h + h) % h
 			f32[off + 2] = radius
 			// Pack: bits 0-7 = osmId, bits 8-15 = depth rank
 			const depthRank = this.organismDepthRanks.get(s.id) ?? 0
@@ -4299,10 +4317,15 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				const a = snap[ai]
 				const b = snap[bi]
 				const off = i * 8 // 32 bytes = 8 floats/u32s
-				lineF32[off + 0] = a.cx + a.vx * dt
-				lineF32[off + 1] = a.cy + a.vy * dt
-				lineF32[off + 2] = b.cx + b.vx * dt
-				lineF32[off + 3] = b.cy + b.vy * dt
+				// Use toroidal delta so lines connect across the boundary correctly
+				const ax = ((a.cx + a.vx * dt) % w + w) % w
+				const ay = ((a.cy + a.vy * dt) % h + h) % h
+				const bx = ax + toroidalDelta(ax, ((b.cx + b.vx * dt) % w + w) % w, w)
+				const by = ay + toroidalDelta(ay, ((b.cy + b.vy * dt) % h + h) % h, h)
+				lineF32[off + 0] = ax
+				lineF32[off + 1] = ay
+				lineF32[off + 2] = bx
+				lineF32[off + 3] = by
 				// Pack: bits 0-7 = osmId, bits 8-15 = depth rank
 				const depthRank = this.organismDepthRanks.get(a.id) ?? 0
 				lineU32[off + 4] = (a.id & 0xff) | ((depthRank & 0xff) << 8)
@@ -4373,11 +4396,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		const f32 = new Float32Array(data)
 		const u32 = new Uint32Array(data)
 
+		const w = this.width
+		const h = this.height
 		for (let i = 0; i < snap.length; i++) {
 			const s = snap[i]
 			const off = i * 4
-			f32[off + 0] = s.cx + s.vx * dt
-			f32[off + 1] = s.cy + s.vy * dt
+			f32[off + 0] = ((s.cx + s.vx * dt) % w + w) % w
+			f32[off + 1] = ((s.cy + s.vy * dt) % h + h) % h
 			f32[off + 2] = radius
 			u32[off + 3] = s.id
 		}
@@ -5138,6 +5163,32 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		soundToggleGroup.appendChild(soundCheckbox)
 		statusBar.appendChild(soundToggleGroup)
 
+		// Wire the bar-visualizer play button to the same enable/disable logic
+		onPlayToggle((playing) => {
+			soundCheckbox.checked = playing
+			soundCheckbox.dispatchEvent(new Event("change"))
+			setPlayState(playing)
+		})
+		// Sync play button when checkbox changes directly
+		soundCheckbox.addEventListener("change", () => {
+			setPlayState(soundCheckbox.checked)
+		})
+
+		// Wire the bar-visualizer inputs to settings
+		onBeatsChange((beats) => {
+			this.musicBeatsPerBar = beats
+			this.resetBarGrid()
+			const inp = document.querySelector<HTMLInputElement>('input[data-setting="musicBeatsPerBar"]')
+			if (inp) inp.value = String(beats)
+		})
+		onBpmChange((bpm) => {
+			this.musicBpm = bpm
+			this.resetBarGrid()
+			const inp = document.querySelector<HTMLInputElement>('input[data-setting="musicBpm"]')
+			if (inp) inp.value = String(bpm)
+			if (this._bpmGauge) this._bpmGauge.value = (bpm - 20) / 280
+		})
+
 		const scrubToggleGroup = document.createElement("div")
 		scrubToggleGroup.className = "control-group"
 		const scrubToggleLabel = document.createElement("label")
@@ -5416,20 +5467,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		phaseRateEl.appendChild(phaseClock)
 		this._phaseClock = phaseClock
 		harmonicEngine.body.appendChild(phaseRateEl)
-		harmonicEngine.body.appendChild(
-			createNumberGroup({
-				label: "Qualification",
-				value: this.qualificationFraction,
-				setting: "qualificationFraction",
-				min: 0.1,
-				max: 4,
-				step: 0.1,
-				suffix: "bars",
-				onInput: (v) => {
-					this.qualificationFraction = Math.round(v * 10) / 10
-				},
-			}),
-		)
 		const niceModeGroup = document.createElement("div")
 		niceModeGroup.className = "control-group"
 		const niceModeLabel = document.createElement("label")
@@ -5521,7 +5558,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			const parts = hiddenPhraseInput.value.split(",") as BassDensity[]
 			if (
 				parts.length === 12 &&
-				parts.every((p) => ["W", "H", "Q", "E"].includes(p))
+				parts.every((p) => ["W", "H", "Q", "E", "X"].includes(p))
 			) {
 				this.phrasePattern = parts
 				setPhraseStripCells(this.phrasePattern, this.phraseMirror)
