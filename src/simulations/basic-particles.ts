@@ -33,10 +33,12 @@ import {
 	hideBarVisualizer,
 	onBeatsChange,
 	onBpmChange,
+	onNiceModeChange,
 	onPlayToggle,
 	onPhraseChange,
 	setBeatsPerBar,
 	setBpm,
+	setNiceMode,
 	setPlayState,
 	setPhraseStripCells,
 	showBarVisualizer,
@@ -50,11 +52,17 @@ import {
 	type BassDensity,
 } from "../music/bass-layer"
 import { computeGlobalMetrics } from "../music/global-metrics"
-import { scheduleBar, type ScheduleConfig } from "../music/hit-scheduler"
-import { applyVoiceBudget } from "../music/voice-budget"
+import { type ScheduleConfig } from "../music/hit-scheduler"
+import {
+	serializeBarSnapshot,
+	serializeMusicState,
+	deserializeScheduledBar,
+} from "../music/worker-serialization"
+import type { ScheduleWorkerRequest, ScheduleWorkerResponse } from "../music/schedule-worker"
 import {
 	barDuration,
 	barStartTime as barStartTimeFn,
+	currentBarNumber as currentBarNumberFn,
 } from "../music/timing"
 import type {
 	BarSnapshot,
@@ -346,6 +354,7 @@ export class RandomDots implements Simulation {
 	private forceMatrix: ForceMatrix = {}
 	private autoRandomizeMatrixEnabled = true
 	private autoRandomizeCountsEnabled = true
+	private consecutiveQuartalBars = 0
 	private affectRadius = 61.1
 	private forceRepelDistance = 40.72
 	private baseStrength = 207.94
@@ -431,6 +440,9 @@ export class RandomDots implements Simulation {
 	private currentScheduledBar: ScheduledBar | null = null
 	private musicBarNumber = -1
 	private tSoundStart = 0
+	private scheduleWorker: Worker | null = null
+	private scheduleWorkerReqId = 0
+	private pendingBarRequest = false
 	private musicBpm = 90
 	private musicTimeMultiplier = 1
 	private musicBeatsPerBar = 4
@@ -929,9 +941,11 @@ export class RandomDots implements Simulation {
 		// Swap ping-pong
 		this.pingPong = 1 - this.pingPong
 
-		// Bar-boundary music scheduling — lookahead pattern (§3.1).
-		// Schedule the upcoming bar BEFORE it starts so all hit times
-		// are in the future and the audio thread can process them on time.
+		// Bar-boundary music scheduling — Web Worker pattern.
+		// The heavy scheduleBar computation runs off-thread.  A 200ms
+		// look-ahead is safe because the main thread only posts a message
+		// (no jank).  The worker responds with the ScheduledBar and the
+		// main thread creates audio nodes + visual pulses.
 		if (this.audioGraph.isEnabled) {
 			const barDur = barDuration(
 				this.musicBpm,
@@ -940,18 +954,20 @@ export class RandomDots implements Simulation {
 			)
 			const now = this.audioGraph.currentTime
 
-			// Lookahead: schedule the next bar when its start is within
-			// 100ms of now.  This gives the audio thread ~100ms of lead
-			// time to prepare all voices before the first hit plays.
+			const WORKER_LOOKAHEAD = 0.020
 			const nextBar = this.musicBarNumber + 1
 			const nextBarStart = barStartTimeFn(this.tSoundStart, nextBar, barDur)
-			const SCHEDULE_AHEAD = 0.1
 
-			if (now + SCHEDULE_AHEAD >= nextBarStart && this.detectionState && this.latestGlobalMetrics) {
+			if (
+				now + WORKER_LOOKAHEAD >= nextBarStart
+				&& !this.pendingBarRequest
+				&& this.detectionState
+				&& this.latestGlobalMetrics
+			) {
 				this.musicBarNumber = nextBar
-				const barStart = nextBarStart
+				this.pendingBarRequest = true
 
-				// Build snapshot from detection state
+				// Build snapshot (cheap — reads existing detection state)
 				const snapshot = this.buildBarSnapshot()
 
 				const config: ScheduleConfig = {
@@ -961,71 +977,117 @@ export class RandomDots implements Simulation {
 					beatsPerBar: this.musicBeatsPerBar,
 				}
 
-				const scheduled = scheduleBar(
-					snapshot,
-					nextBar,
-					barStart,
-					barDur,
-					this.musicState,
+				// Capture values needed by the response handler
+				const barStart = nextBarStart
+				const reqBarDur = barDur
+				const reqBeatsPerBar = this.musicBeatsPerBar
+				const reqBarNumber = nextBar
+
+				const worker = this.ensureScheduleWorker()
+				const reqId = ++this.scheduleWorkerReqId
+
+				const req: ScheduleWorkerRequest = {
+					id: reqId,
+					snapshot: serializeBarSnapshot(snapshot),
+					barNumber: reqBarNumber,
+					barStartTime: barStart,
+					barDur: reqBarDur,
+					prevState: serializeMusicState(this.musicState),
 					config,
-				)
+					voiceBudget: this.voiceBudget,
+				}
 
-				// Apply voice budget — cull excess melody voices
-				const culled = applyVoiceBudget(scheduled, this.voiceBudget)
+				worker.postMessage(req)
 
-				// Play the bar and trigger visual pulses
-				const hitTimings = this.audioGraph.playScheduledBar(culled)
-				this.triggerVisualPulses(culled, hitTimings)
+				// One-shot handler for this request
+				const onResponse = (e: MessageEvent<ScheduleWorkerResponse>) => {
+					const resp = e.data
+					if (resp.id !== reqId) return
+					worker.removeEventListener("message", onResponse)
+					this.pendingBarRequest = false
 
-				// Update bass layer — schedule bass plucks for this bar
-				const phraseSeq = expandPhrase(this.phrasePattern, this.phraseMirror)
-				this.bassLayer.applyUpdate(
-					scheduled.bassUpdate,
-					barStart,
-					barDur,
-					this.musicBeatsPerBar,
-					scheduled.barNumber,
-					phraseSeq,
-				)
+					const scheduled = deserializeScheduledBar(resp.scheduled)
+					const culled = deserializeScheduledBar(resp.culled)
 
-				// Auto-randomize one bar before phrase cycle restarts, so the
-				// transition bar resolves before the bass sequence begins anew.
-				const { idx: phraseIdx, len: phraseLen } = this.phrasePosition(nextBar)
-				if (phraseLen > 0 && phraseIdx === phraseLen - 2) {
-					if (this.autoRandomizeMatrixEnabled) {
-						const arTypes = this.getTypeIds()
-						this.forceMatrix = randomizeMatrix(arTypes)
-						this.forceMatrixDirty = true
-						this.speciesPresence.clear()
-						this.speciesBrightness.clear()
-						if (this._matrixWrapper)
-							this.syncMatrixUI(this._matrixWrapper, arTypes)
-						if (this._matrixContainer)
-							this.syncMatrixHidden(this._matrixContainer)
-						if (this._matrixRootContainer) {
-							this._matrixRootContainer.dispatchEvent(
-								new Event("change", { bubbles: true }),
-							)
+					// Play the bar and trigger visual pulses
+					const hitTimings = this.audioGraph.playScheduledBar(culled)
+					this.triggerVisualPulses(culled, hitTimings)
+
+					// Update bass layer
+					const phraseSeq = expandPhrase(this.phrasePattern, this.phraseMirror)
+					this.bassLayer.applyUpdate(
+						scheduled.bassUpdate,
+						barStart,
+						reqBarDur,
+						reqBeatsPerBar,
+						scheduled.barNumber,
+						phraseSeq,
+					)
+
+					// Track consecutive quartal-stack bars
+					if (scheduled.bassUpdate.isQuartalStack) {
+						this.consecutiveQuartalBars++
+						if (this.consecutiveQuartalBars >= 2) {
+							this.consecutiveQuartalBars = 0
+							const qTypes = this.getTypeIds()
+							this.forceMatrix = randomizeMatrix(qTypes)
+							this.forceMatrixDirty = true
+							this.speciesPresence.clear()
+							this.speciesBrightness.clear()
+							if (this._matrixWrapper)
+								this.syncMatrixUI(this._matrixWrapper, qTypes)
+							if (this._matrixContainer)
+								this.syncMatrixHidden(this._matrixContainer)
+							if (this._matrixRootContainer) {
+								this._matrixRootContainer.dispatchEvent(
+									new Event("change", { bubbles: true }),
+								)
+							}
+						}
+					} else {
+						this.consecutiveQuartalBars = 0
+					}
+
+					// Auto-randomize one bar before phrase cycle restarts
+					const { idx: phraseIdx, len: phraseLen } = this.phrasePosition(reqBarNumber)
+					if (phraseLen > 0 && phraseIdx === phraseLen - 2) {
+						if (this.autoRandomizeMatrixEnabled) {
+							const arTypes = this.getTypeIds()
+							this.forceMatrix = randomizeMatrix(arTypes)
+							this.forceMatrixDirty = true
+							this.speciesPresence.clear()
+							this.speciesBrightness.clear()
+							if (this._matrixWrapper)
+								this.syncMatrixUI(this._matrixWrapper, arTypes)
+							if (this._matrixContainer)
+								this.syncMatrixHidden(this._matrixContainer)
+							if (this._matrixRootContainer) {
+								this._matrixRootContainer.dispatchEvent(
+									new Event("change", { bubbles: true }),
+								)
+							}
+						}
+						if (this.autoRandomizeCountsEnabled) {
+							this.randomizeCounts()
 						}
 					}
-					if (this.autoRandomizeCountsEnabled) {
-						this.randomizeCounts()
+
+					// Update music state for next bar
+					this.musicState = {
+						currentBarNumber: reqBarNumber,
+						currentMode: scheduled.mode,
+						currentRootMidi: scheduled.rootMidi,
+						netStability: scheduled.netStability,
+						prevScheduledBar: scheduled,
+						isBufferBar: scheduled.isBufferBar,
+						bufferChord: scheduled.bufferChord,
+						envelopeRanges: scheduled.envelopeRanges,
+						speciesCycle: scheduled.speciesCycle,
 					}
+					this.currentScheduledBar = culled
 				}
 
-				// Update music state for next bar
-				this.musicState = {
-					currentBarNumber: nextBar,
-					currentMode: scheduled.mode,
-					currentRootMidi: scheduled.rootMidi,
-					netStability: scheduled.netStability,
-					prevScheduledBar: scheduled,
-					isBufferBar: scheduled.isBufferBar,
-					bufferChord: scheduled.bufferChord,
-					envelopeRanges: scheduled.envelopeRanges,
-					speciesCycle: scheduled.speciesCycle,
-				}
-				this.currentScheduledBar = culled
+				worker.addEventListener("message", onResponse)
 			}
 
 			// Continuous bass layer volume updates (not bar-quantized, §9.4)
@@ -1044,9 +1106,10 @@ export class RandomDots implements Simulation {
 				this.musicTimeMultiplier,
 			)
 			const bvNow = this.audioGraph.currentTime
+			const bvVisualBar = currentBarNumberFn(this.tSoundStart, bvNow, bvBarDur)
 			const bvBarStart = barStartTimeFn(
 				this.tSoundStart,
-				this.musicBarNumber,
+				bvVisualBar,
 				bvBarDur,
 			)
 			const phraseSeqExpanded = expandPhrase(
@@ -1061,7 +1124,7 @@ export class RandomDots implements Simulation {
 			const cycleOrigin = this.bassLayer.cycleOrigin
 			const phraseBarInCycle =
 				cycleOrigin != null && seqLen > 0
-					? (((this.musicBarNumber - cycleOrigin) % seqLen) + seqLen) % seqLen
+					? (((bvVisualBar - cycleOrigin) % seqLen) + seqLen) % seqLen
 					: -1
 			updateBarVisualizer({
 				scheduledBar: this.currentScheduledBar,
@@ -3928,6 +3991,16 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	 * Re-anchor the bar grid so the next bar boundary fires immediately.
 	 * Called when BPM, time multiplier, or beats-per-bar change mid-playback.
 	 */
+	private ensureScheduleWorker(): Worker {
+		if (!this.scheduleWorker) {
+			this.scheduleWorker = new Worker(
+				new URL("../music/schedule-worker.ts", import.meta.url),
+				{ type: "module" },
+			)
+		}
+		return this.scheduleWorker
+	}
+
 	private resetBarGrid(): void {
 		if (this.audioGraph.isEnabled) {
 			this.tSoundStart = this.audioGraph.currentTime
@@ -5188,6 +5261,12 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			if (inp) inp.value = String(bpm)
 			if (this._bpmGauge) this._bpmGauge.value = (bpm - 20) / 280
 		})
+		onNiceModeChange((nice) => {
+			this.preferNiceModes = nice
+			const cb = document.querySelector<HTMLInputElement>('input[data-setting="preferNiceModes"]')
+			if (cb) cb.checked = nice
+		})
+		setNiceMode(this.preferNiceModes)
 
 		const scrubToggleGroup = document.createElement("div")
 		scrubToggleGroup.className = "control-group"
@@ -5478,6 +5557,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		niceModeCheckbox.dataset.setting = "preferNiceModes"
 		niceModeCheckbox.addEventListener("change", () => {
 			this.preferNiceModes = niceModeCheckbox.checked
+			setNiceMode(niceModeCheckbox.checked)
 		})
 		niceModeGroup.appendChild(niceModeCheckbox)
 		harmonicEngine.body.appendChild(niceModeGroup)
@@ -6867,6 +6947,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this._autoRandomizeMatrixClock = null
 		this._autoRandomizeCountsClock = null
 
+		this.scheduleWorker?.terminate()
+		this.scheduleWorker = null
 		this.bassLayer.dispose()
 		this.audioGraph.dispose()
 		this.readbackBuffer?.destroy()

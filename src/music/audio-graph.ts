@@ -190,7 +190,6 @@ export class AudioGraph {
    */
   playScheduledBar(
     bar: ScheduledBar,
-    lookahead: number = 0.05,
   ): readonly { readonly startTime: number; readonly endTime: number }[] {
     if (!this.ctx || !this.masterGain || !this.enabled) return [];
 

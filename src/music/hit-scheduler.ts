@@ -441,14 +441,7 @@ export function scheduleBar(
     const bPcMin = LOCAL_WEIGHT * orgPcMin + (1 - LOCAL_WEIGHT) * gPcMin;
     const bPcMax = LOCAL_WEIGHT * orgPcMax + (1 - LOCAL_WEIGHT) * gPcMax;
 
-    // Phase-rotate each organism's grid so identical subdivisions
-    // across organisms don't stack on the same positions.
-    const slotWidth = barDur / subdivision;
-    const rawOffset = numOrganisms > 1
-      ? ((orgIdx / numOrganisms) - 0.5) * slotWidth
-      : 0;
-    const rawTimes = subdivisionTimes(barStartTime, barDur, subdivision)
-      .map(t => t + rawOffset);
+    const rawTimes = subdivisionTimes(barStartTime, barDur, subdivision);
     // Build the organism's subdivision grid (bar-relative offsets)
     const subdivGrid: number[] = [];
     for (let s = 0; s < subdivision; s++) subdivGrid.push((s / subdivision) * barDur);

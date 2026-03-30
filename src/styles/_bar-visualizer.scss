@@ -126,6 +126,21 @@
   flex-shrink: 0;
 }
 
+.bv-nice-toggle {
+  display: flex;
+  align-items: center;
+  gap: $sp-1;
+
+  input[type="checkbox"] {
+    @include checkbox-toggle(28px, 16px);
+  }
+}
+
+.bv-nice-label {
+  font-size: 12px;
+  line-height: 1;
+}
+
 .bv-compact-input {
   display: flex;
   align-items: center;

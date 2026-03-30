@@ -43,6 +43,7 @@ let isPlaying = false
 let phraseStrip: HTMLDivElement | null = null
 let phraseCells: HTMLDivElement[] = []
 let phraseMirrorCheckbox: HTMLInputElement | null = null
+let niceModeCheckbox: HTMLInputElement | null = null
 
 // Cache to avoid re-creating dots every frame
 let cachedBarNumber = -1
@@ -74,6 +75,24 @@ function ensureDOM(): void {
 
   const controlsGroup = document.createElement("div")
   controlsGroup.className = "bv-controls-group"
+
+  const niceModeWrapper = document.createElement("div")
+  niceModeWrapper.className = "bv-nice-toggle"
+  const niceOff = document.createElement("span")
+  niceOff.textContent = "\u{1F610}"
+  niceOff.className = "bv-nice-label"
+  niceModeCheckbox = document.createElement("input")
+  niceModeCheckbox.type = "checkbox"
+  niceModeCheckbox.addEventListener("change", () => {
+    niceModeOnChange?.(niceModeCheckbox!.checked)
+  })
+  const niceOn = document.createElement("span")
+  niceOn.textContent = "\u{1F642}"
+  niceOn.className = "bv-nice-label"
+  niceModeWrapper.appendChild(niceOff)
+  niceModeWrapper.appendChild(niceModeCheckbox)
+  niceModeWrapper.appendChild(niceOn)
+  controlsGroup.appendChild(niceModeWrapper)
 
   bpmInput = makeCompactInput("bpm", 90, 20, 300, 5, (v) => bpmOnChange?.(v))
   controlsGroup.appendChild(bpmInput.parentElement!)
@@ -225,6 +244,7 @@ let phraseOnChange: ((cells: readonly BassDensity[], mirror: boolean) => void) |
 let playOnToggle: ((playing: boolean) => void) | null = null
 let beatsOnChange: ((beats: number) => void) | null = null
 let bpmOnChange: ((bpm: number) => void) | null = null
+let niceModeOnChange: ((nice: boolean) => void) | null = null
 
 const PLAY_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>`
 const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>`
@@ -261,6 +281,17 @@ export function onBpmChange(cb: (bpm: number) => void): void {
 export function setBpm(bpm: number): void {
   ensureDOM()
   if (bpmInput) bpmInput.value = String(bpm)
+}
+
+/** Register a callback for when the user toggles nice modes. */
+export function onNiceModeChange(cb: (nice: boolean) => void): void {
+  niceModeOnChange = cb
+}
+
+/** Sync the nice-mode toggle from external changes. */
+export function setNiceMode(nice: boolean): void {
+  ensureDOM()
+  if (niceModeCheckbox) niceModeCheckbox.checked = nice
 }
 
 /** Register a callback for when the user edits the phrase strip. */
