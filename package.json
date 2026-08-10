@@ -8,10 +8,12 @@
 		"dev": "vite",
 		"build": "tsc && vite build",
 		"build:wallpaper": "tsc && vite build && node wallpaper-engine/pack.mjs",
-		"preview": "vite preview"
+		"preview": "vite preview",
+		"knip": "bunx --bun knip"
 	},
 	"devDependencies": {
 		"@webgpu/types": "^0.1.69",
+		"knip": "^6.1.0",
 		"sass": "^1.98.0",
 		"typescript": "^5.8.3",
 		"vite": "^6.3.0"

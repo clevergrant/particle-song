@@ -22,7 +22,7 @@ import type { WaveformParams } from "./types";
  * @param typeKeys    - All type keys
  * @returns 0 (antisocial / repulsive) to 1 (sociable / attractive)
  */
-export function sociabilityScore(
+function sociabilityScore(
   forceMatrix: ForceMatrix,
   typeKey: string,
   typeKeys: readonly string[],
@@ -77,13 +77,16 @@ export function computeAllSociabilities(
 /**
  * Map sociability to waveform blend parameters.
  *
- * 0.0 (antisocial) → sawtooth (all harmonics, harsh)
- * 0.33             → square (odd harmonics, buzzy)
- * 0.66             → triangle (few harmonics, soft)
+ * The harsh half of the blend spectrum (sawtooth, square) is retired —
+ * even volume-compensated they dominate the mix. Sociability crossfades
+ * across the two softest waveforms instead:
+ *
+ * 0.0 (antisocial) → triangle (odd harmonics, gentle buzz)
  * 1.0 (sociable)   → sine (fundamental only, warm)
  */
 export function sociabilityToWaveform(sociability: number): WaveformParams {
-  return { sociability, blend: sociability };
+  const clamped = Math.max(0, Math.min(1, sociability));
+  return { sociability, blend: 0.66 + 0.34 * clamped };
 }
 
 /**
@@ -93,16 +96,17 @@ export function sociabilityToWaveform(sociability: number): WaveformParams {
  * This is used by the audio graph to crossfade between two oscillator types.
  */
 /**
- * Volume scalar that attenuates harsh (low-sociability) waveforms so
- * sawtooth-heavy voices don't dominate the mix.
+ * Volume scalar that tilts buzzier (low-sociability) voices under softer
+ * ones. The waveform range is only triangle↔sine now, so the loudness
+ * spread between extremes is mild — the tilt just seats triangle voices
+ * slightly back in the mix without burying them.
  *
- * Maps sociability [0, 1] → gain [0.35, 1.0] with a sqrt curve so the
- * penalty tapers off quickly once you leave pure sawtooth territory.
+ * Maps sociability [0, 1] → gain [0.55, 1.0].
  */
 export function sociabilityGain(sociability: number): number {
-  const MIN_GAIN = 0.35;
+  const MIN_GAIN = 0.55;
   const clamped = Math.max(0, Math.min(1, sociability));
-  return MIN_GAIN + (1 - MIN_GAIN) * Math.sqrt(clamped);
+  return MIN_GAIN + (1 - MIN_GAIN) * Math.pow(clamped, 0.7);
 }
 
 /**
@@ -114,7 +118,7 @@ export function sociabilityGain(sociability: number): number {
  * Exponential sweep for perceptually even brightness change.
  */
 export function waveformLowpassCutoff(blend: number): number {
-  const MIN_CUTOFF = 1500;
+  const MIN_CUTOFF = 800;
   const MAX_CUTOFF = 20000;
   const clamped = Math.max(0, Math.min(1, blend));
   return MIN_CUTOFF * Math.pow(MAX_CUTOFF / MIN_CUTOFF, clamped);

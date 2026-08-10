@@ -6,7 +6,7 @@
 
 import { clamp, evalCubicBezier } from "./math-utils";
 
-export interface CurveNode {
+interface CurveNode {
   x: number;
   y: number;
   /** Handle-in offset (relative to node). Points toward previous node. */

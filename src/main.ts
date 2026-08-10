@@ -1,5 +1,6 @@
 import { simulations } from "./simulations";
 import { attachNumberScroll } from "./number-scroll";
+import { attachNumberDrag } from "./number-drag";
 import type { Simulation, GpuContext } from "./types";
 import { ShaderMenu } from "./shader-menu";
 import "./num-input"; // register <num-input> custom element
@@ -311,6 +312,7 @@ function selectSimulation(sim: Simulation) {
       const container = document.createElement("div");
       def.build(container);
       attachNumberScroll(container);
+      attachNumberDrag(container);
       windowManager.register({
         id: def.id,
         title: def.title,
@@ -339,6 +341,7 @@ function selectSimulation(sim: Simulation) {
     // Legacy fallback: use old buildControls
     sim.buildControls?.(controls);
     attachNumberScroll(controls);
+    attachNumberDrag(controls);
   }
 
   // Set up shader menu if simulation supports shader switching

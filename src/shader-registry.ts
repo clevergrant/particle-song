@@ -175,7 +175,7 @@ fn hsl2rgb(hsl: vec3<f32>) -> vec3<f32> {
 `;
 
 /** Quad post-process prefix: structs, bindings, vertex shader, HSL helpers */
-export const QUAD_PREFIX = /* wgsl */ `
+const QUAD_PREFIX = /* wgsl */ `
 struct QuadParams {
   time:   f32,
   param0: f32,

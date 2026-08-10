@@ -12,7 +12,7 @@
  *   "input" — bubbles whenever the value changes (typed, wheel, reset).
  */
 
-import { applyStepDelta } from "./number-scroll";
+import { applyStepDelta, stepDecimals } from "./number-scroll";
 
 export class NumInput extends HTMLElement {
   private _input!: HTMLInputElement;
@@ -61,6 +61,50 @@ export class NumInput extends HTMLElement {
       const direction = e.deltaY > 0 ? -1 : e.deltaY < 0 ? 1 : 0;
       if (direction === 0) return;
       applyStepDelta(input, direction);
+    });
+
+    // Click-and-drag vertically to adjust value
+    input.addEventListener("pointerdown", (e) => {
+      const startY = e.clientY;
+      const startValue = Number(input.value) || 0;
+      const step = Number(input.step) || 1;
+      const minVal = input.min !== "" ? Number(input.min) : -Infinity;
+      const maxVal = input.max !== "" ? Number(input.max) : Infinity;
+      const pxPerStep = step < 1 ? Math.max(4, 2 / step) : 2;
+      const decimals = stepDecimals(step);
+      let dragging = false;
+
+      const onMove = (ev: PointerEvent) => {
+        const dy = startY - ev.clientY;
+        if (!dragging) {
+          if (Math.abs(dy) < 3) return;
+          dragging = true;
+          input.setPointerCapture(ev.pointerId);
+          input.style.cursor = "ns-resize";
+          document.body.style.cursor = "ns-resize";
+          input.blur();
+        }
+        const steps = Math.round(dy / pxPerStep);
+        let newVal = startValue + steps * step;
+        newVal = Math.min(maxVal, Math.max(minVal, newVal));
+        if (decimals > 0) newVal = Number(newVal.toFixed(decimals));
+        input.value = String(newVal);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        if (dragging) {
+          input.releasePointerCapture(ev.pointerId);
+          input.style.cursor = "";
+          document.body.style.cursor = "";
+          ev.preventDefault();
+        }
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
     });
 
     this._input = input;

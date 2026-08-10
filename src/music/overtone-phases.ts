@@ -5,7 +5,7 @@
  * the overtone series: octaves → fifths → thirds → sevenths → chromaticism.
  */
 
-import type { HarmonicPhase, RegisterWidth } from "./types";
+import type { HarmonicPhase } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Phase definitions                                                  */
@@ -27,24 +27,6 @@ const PHASE_INTERVALS: readonly (readonly number[])[] = [
 /* ------------------------------------------------------------------ */
 /*  Phase computation                                                  */
 /* ------------------------------------------------------------------ */
-
-/**
- * Compute the harmonic phase for an organism based on its age in bars.
- *
- * @param ageInBars   - How many bars old the organism is
- * @param barsPerPhase - Configurable rate (how many bars per phase transition)
- * @returns HarmonicPhase with phase number (1–6) and available intervals
- */
-export function computeHarmonicPhase(
-  ageInBars: number,
-  barsPerPhase: number,
-): HarmonicPhase {
-  const phase = Math.min(Math.floor(ageInBars / Math.max(1, barsPerPhase)) + 1, 6);
-  return {
-    phase,
-    availableIntervals: PHASE_INTERVALS[phase - 1],
-  };
-}
 
 /**
  * Map an organelle's cross-type link count to a harmonic phase.
@@ -111,32 +93,3 @@ export function collapseToPhase(
   return octave * 12 + collapsedPC;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Register width (§4.3.1)                                            */
-/* ------------------------------------------------------------------ */
-
-/**
- * Determine available octave range based on total organism count.
- */
-export function computeRegisterWidth(organismCount: number): RegisterWidth {
-  if (organismCount <= 1) return { lowOctave: 4, highOctave: 4 };
-  if (organismCount <= 3) return { lowOctave: 3, highOctave: 5 };
-  if (organismCount <= 6) return { lowOctave: 2, highOctave: 6 };
-  return { lowOctave: 1, highOctave: 7 };
-}
-
-/**
- * Clamp a MIDI note to the current register width.
- */
-export function clampToRegister(midiNote: number, width: RegisterWidth): number {
-  const lowMidi = width.lowOctave * 12;      // C of low octave
-  const highMidi = (width.highOctave + 1) * 12 - 1; // B of high octave
-  if (midiNote < lowMidi) {
-    // Shift up by octaves until in range
-    while (midiNote < lowMidi) midiNote += 12;
-  } else if (midiNote > highMidi) {
-    // Shift down by octaves until in range
-    while (midiNote > highMidi) midiNote -= 12;
-  }
-  return midiNote;
-}

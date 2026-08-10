@@ -2,7 +2,7 @@
  * <dot-matrix> - Small NxN colored-dot grid for force matrix preview.
  * Accepts a flat array of colors and a size N.
  */
-export class DotMatrix extends HTMLElement {
+class DotMatrix extends HTMLElement {
   private _grid: HTMLElement;
   private _size = 0;
   private _cells: HTMLElement[] = [];

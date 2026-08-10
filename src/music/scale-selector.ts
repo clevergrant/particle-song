@@ -12,7 +12,7 @@ import { STABILITY_BANDS, BAND_BOUNDARIES } from "./modes";
 /*  Default hysteresis margin                                          */
 /* ------------------------------------------------------------------ */
 
-export const DEFAULT_HYSTERESIS_MARGIN = 0.03;
+const DEFAULT_HYSTERESIS_MARGIN = 0.03;
 
 /* ------------------------------------------------------------------ */
 /*  Band index lookup                                                  */

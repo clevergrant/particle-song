@@ -1,6 +1,6 @@
 /**
- * Godot-style click-and-drag on number inputs to slide values up/down.
- * Hold-click and drag horizontally to adjust the value.
+ * Click-and-drag on number inputs to slide values up/down.
+ * Hold-click and drag vertically to adjust the value.
  */
 
 import { stepDecimals } from "./number-scroll";
@@ -11,15 +11,11 @@ export function attachNumberDrag(container: HTMLElement) {
   container.addEventListener("pointerdown", onPointerDown);
 }
 
-export function detachNumberDrag(container: HTMLElement) {
-  container.removeEventListener("pointerdown", onPointerDown);
-}
-
 function onPointerDown(e: PointerEvent) {
   const input = e.target as HTMLInputElement;
   if (input.tagName !== "INPUT" || input.type !== "number") return;
 
-  const startX = e.clientX;
+  const startY = e.clientY;
   const startValue = Number(input.value) || 0;
   const step = Number(input.step) || 1;
   const min = input.min !== "" ? Number(input.min) : -Infinity;
@@ -31,19 +27,19 @@ function onPointerDown(e: PointerEvent) {
   let dragging = false;
 
   function onMove(ev: PointerEvent) {
-    const dx = ev.clientX - startX;
+    // Negative dy = dragging up = increase value
+    const dy = startY - ev.clientY;
 
     if (!dragging) {
-      if (Math.abs(dx) < DRAG_THRESHOLD) return;
+      if (Math.abs(dy) < DRAG_THRESHOLD) return;
       dragging = true;
       input.setPointerCapture(ev.pointerId);
-      input.style.cursor = "ew-resize";
-      document.body.style.cursor = "ew-resize";
-      // Prevent text selection while dragging
+      input.style.cursor = "ns-resize";
+      document.body.style.cursor = "ns-resize";
       input.blur();
     }
 
-    const steps = Math.round(dx / pxPerStep);
+    const steps = Math.round(dy / pxPerStep);
     const decimals = stepDecimals(step);
     let newVal = startValue + steps * step;
     newVal = Math.min(max, Math.max(min, newVal));
@@ -61,10 +57,8 @@ function onPointerDown(e: PointerEvent) {
       input.releasePointerCapture(ev.pointerId);
       input.style.cursor = "";
       document.body.style.cursor = "";
-      // Prevent the click from focusing/selecting the input after drag
       ev.preventDefault();
     }
-    // If not dragging, normal click behavior proceeds as usual
   }
 
   window.addEventListener("pointermove", onMove);

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head><title>WebAudio Scheduling Test</title></head>
+<body>
+<h2>WebAudio Scheduling Test — Sustained Audio + Node Creation</h2>
+<button id="start">Run Test</button>
+<pre id="log"></pre>
+<script>
+const log = document.getElementById('log');
+function print(msg) { log.textContent += msg + '\n'; }
+
+document.getElementById('start').addEventListener('click', async () => {
+  const ctx = new AudioContext();
+  await ctx.resume();
+
+  // Build a signal chain that matches the app:
+  // melody → masterGain → masterLpf → reverbDry → limiter → analyser → destination
+  //                      → convolver → reverbWet → limiter
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -6;
+  limiter.knee.value = 10;
+  limiter.ratio.value = 12;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.25;
+
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.5;
+
+  const masterLpf = ctx.createBiquadFilter();
+  masterLpf.type = 'lowpass';
+  masterLpf.frequency.value = 20000;
+
+  const reverbDry = ctx.createGain();
+  reverbDry.gain.value = 0.7;
+  const reverbWet = ctx.createGain();
+  reverbWet.gain.value = 0.15;
+
+  // Simple reverb IR
+  const irLen = ctx.sampleRate * 2;
+  const irBuf = ctx.createBuffer(2, irLen, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = irBuf.getChannelData(ch);
+    for (let i = 0; i < irLen; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLen, 2);
+  }
+  const convolver = ctx.createConvolver();
+  convolver.buffer = irBuf;
+
+  masterGain.connect(masterLpf);
+  masterLpf.connect(reverbDry);
+  masterLpf.connect(convolver);
+  convolver.connect(reverbWet);
+  reverbDry.connect(limiter);
+  reverbWet.connect(limiter);
+
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  limiter.connect(analyser);
+  analyser.connect(ctx.destination);
+  const buf = new Float32Array(analyser.fftSize);
+
+  // ── Test 5: sustained tone + create 30 new nodes while it plays ──
+  print('=== Test 5: Sustained tone through full chain, then batch-create 30 oscillators ===');
+  print('Listening for any change in the sustained tone when new nodes are created...\n');
+
+  // Start a sustained tone
+  const sustOsc = ctx.createOscillator();
+  sustOsc.frequency.value = 220;
+  const sustGain = ctx.createGain();
+  sustGain.gain.value = 0.3;
+  sustOsc.connect(sustGain);
+  sustGain.connect(masterGain);
+  sustOsc.start(ctx.currentTime);
+
+  // Let it stabilize for 1 second (compressor settles)
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Sample baseline level
+  const baselineSamples = [];
+  for (let i = 0; i < 5; i++) {
+    await new Promise(r => setTimeout(r, 50));
+    analyser.getFloatTimeDomainData(buf);
+    const peak = Math.max(...buf.map(Math.abs));
+    baselineSamples.push(peak);
+    print(`  baseline[${i}] peak=${peak.toFixed(6)}`);
+  }
+  const baseline = baselineSamples.reduce((a, b) => a + b) / baselineSamples.length;
+  print(`  baseline avg: ${baseline.toFixed(6)}\n`);
+
+  // NOW: create and connect 30 oscillators scheduled 500ms in the future
+  // (same as what playScheduledBar does)
+  print('  >>> Creating 30 oscillators + filters + gains, connecting to masterGain...');
+  const t5 = ctx.currentTime + 0.5;
+  const nodes = [];
+  for (let i = 0; i < 30; i++) {
+    const o = ctx.createOscillator();
+    o.frequency.value = 300 + i * 40;
+
+    const gA = ctx.createGain();
+    gA.gain.value = 0.7;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1000;
+    filter.Q.value = 1;
+
+    const lpf = ctx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.value = 4000;
+
+    const env = ctx.createGain();
+    env.gain.value = 0;
+    env.gain.setValueAtTime(0, t5);
+    env.gain.linearRampToValueAtTime(0.02, t5 + 0.05);
+    env.gain.linearRampToValueAtTime(0, t5 + 0.3);
+
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.random() * 2 - 1;
+
+    o.connect(gA);
+    gA.connect(filter);
+    filter.connect(lpf);
+    lpf.connect(env);
+    env.connect(panner);
+    panner.connect(masterGain); // same masterGain as sustained tone
+
+    o.start(t5);
+    o.stop(t5 + 0.5);
+    nodes.push({ o, gA, filter, lpf, env, panner });
+  }
+  print('  >>> Done creating nodes.\n');
+
+  // Sample every 25ms to catch any transient
+  print('  Monitoring for level changes (should stay near baseline until t=0):');
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 25));
+    analyser.getFloatTimeDomainData(buf);
+    const peak = Math.max(...buf.map(Math.abs));
+    const delta = ((ctx.currentTime - t5) * 1000).toFixed(0);
+    const marker = ctx.currentTime >= t5 ? '▶ AFTER' : '  before';
+    const deviation = ((peak - baseline) / baseline * 100).toFixed(1);
+    const flag = Math.abs(peak - baseline) > baseline * 0.1 ? ' ← CHANGE' : '';
+    print(`  t=${delta}ms ${marker}  peak=${peak.toFixed(6)}  Δ=${deviation}%${flag}`);
+  }
+
+  // Cleanup
+  sustOsc.stop();
+  for (const n of nodes) { n.o.disconnect(); n.gA.disconnect(); n.filter.disconnect(); n.lpf.disconnect(); n.env.disconnect(); n.panner.disconnect(); }
+
+  // ── Test 6: Same but WITHOUT the compressor ──
+  await new Promise(r => setTimeout(r, 1000));
+  print('\n=== Test 6: Same test but bypassing the compressor ===');
+
+  // Rewire: masterGain → analyser directly (no limiter)
+  masterGain.disconnect();
+  masterGain.connect(analyser);
+
+  const sustOsc2 = ctx.createOscillator();
+  sustOsc2.frequency.value = 220;
+  const sustGain2 = ctx.createGain();
+  sustGain2.gain.value = 0.3;
+  sustOsc2.connect(sustGain2);
+  sustGain2.connect(masterGain);
+  sustOsc2.start(ctx.currentTime);
+
+  await new Promise(r => setTimeout(r, 1000));
+
+  const baseline2Samples = [];
+  for (let i = 0; i < 5; i++) {
+    await new Promise(r => setTimeout(r, 50));
+    analyser.getFloatTimeDomainData(buf);
+    const peak = Math.max(...buf.map(Math.abs));
+    baseline2Samples.push(peak);
+    print(`  baseline[${i}] peak=${peak.toFixed(6)}`);
+  }
+  const baseline2 = baseline2Samples.reduce((a, b) => a + b) / baseline2Samples.length;
+  print(`  baseline avg: ${baseline2.toFixed(6)}\n`);
+
+  print('  >>> Creating 30 oscillators...');
+  const t6 = ctx.currentTime + 0.5;
+  const nodes2 = [];
+  for (let i = 0; i < 30; i++) {
+    const o = ctx.createOscillator();
+    o.frequency.value = 300 + i * 40;
+    const gA = ctx.createGain();
+    gA.gain.value = 0.7;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1000;
+    const lpf = ctx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.value = 4000;
+    const env = ctx.createGain();
+    env.gain.value = 0;
+    env.gain.setValueAtTime(0, t6);
+    env.gain.linearRampToValueAtTime(0.02, t6 + 0.05);
+    env.gain.linearRampToValueAtTime(0, t6 + 0.3);
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.random() * 2 - 1;
+    o.connect(gA); gA.connect(filter); filter.connect(lpf); lpf.connect(env); env.connect(panner); panner.connect(masterGain);
+    o.start(t6); o.stop(t6 + 0.5);
+    nodes2.push({ o, gA, filter, lpf, env, panner });
+  }
+  print('  >>> Done.\n');
+
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 25));
+    analyser.getFloatTimeDomainData(buf);
+    const peak = Math.max(...buf.map(Math.abs));
+    const delta = ((ctx.currentTime - t6) * 1000).toFixed(0);
+    const marker = ctx.currentTime >= t6 ? '▶ AFTER' : '  before';
+    const deviation = ((peak - baseline2) / baseline2 * 100).toFixed(1);
+    const flag = Math.abs(peak - baseline2) > baseline2 * 0.1 ? ' ← CHANGE' : '';
+    print(`  t=${delta}ms ${marker}  peak=${peak.toFixed(6)}  Δ=${deviation}%${flag}`);
+  }
+
+  sustOsc2.stop();
+  for (const n of nodes2) { n.o.disconnect(); n.gA.disconnect(); n.filter.disconnect(); n.lpf.disconnect(); n.env.disconnect(); n.panner.disconnect(); }
+
+  print('\n=== DONE ===');
+  ctx.close();
+});
+</script>
+</body>
+</html>

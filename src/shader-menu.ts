@@ -9,7 +9,7 @@ import {
 } from "./shader-registry";
 import { NumInput } from "./num-input";
 
-export interface ShaderMenuCallbacks {
+interface ShaderMenuCallbacks {
   onParticleEffectChange: (effectId: string) => void;
   onPostEffectChange: (effectId: string) => void;
 }

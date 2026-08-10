@@ -3,7 +3,6 @@ import { ColorPicker } from "../color-picker"
 import { CurveEditor } from "../curve-editor"
 import {
 	DEFAULT_DETECTION_CONFIG,
-	runDetection,
 	toroidalDelta,
 	updateRegistry,
 	type DetectionConfig,
@@ -11,8 +10,13 @@ import {
 	type OrganelleState,
 	type OrganelleTreeNode,
 	type OrganismRegistry,
-	type ReadbackData,
 } from "../detection"
+import { deserializeDetectionFrame } from "../detection-serialization"
+import type {
+	DetectionWorkerRequest,
+	DetectionWorkerResponse,
+	DetectionFrameWire,
+} from "../detection-worker-types"
 import { EnvelopeEditor, buildGateAwareLUT } from "../envelope-editor"
 import { applyStepDelta } from "../number-scroll"
 import {
@@ -31,34 +35,50 @@ import type { VuMeter } from "../ui/widgets/vu-meter"
 import { AudioGraph } from "../music/audio-graph"
 import {
 	hideBarVisualizer,
-	onBeatsChange,
+	onBarsPerMelodyChange,
 	onBpmChange,
+	onCyclesChange,
 	onNiceModeChange,
 	onPlayToggle,
-	onPhraseChange,
-	setBeatsPerBar,
+	setBarsPerMelody,
 	setBpm,
+	setCycles,
 	setNiceMode,
 	setPlayState,
-	setPhraseStripCells,
 	showBarVisualizer,
 	updateBarVisualizer,
 } from "../music/bar-visualizer"
-import {
-	BassLayer,
-	DEFAULT_PHRASE_CELLS,
-	expandPhrase,
-	expandPhraseIndices,
-	type BassDensity,
-} from "../music/bass-layer"
-import { computeGlobalMetrics } from "../music/global-metrics"
 import { type ScheduleConfig } from "../music/hit-scheduler"
+import { computeDroneVoices } from "../music/particle-chorus"
+import { extractTypeAdjacency } from "../music/structure-fingerprint"
+import {
+	type OrganismCycle,
+	type RootStrategy,
+	buildOrganismCycle,
+	advanceCycle,
+	createInitialCycle,
+} from "../music/organism-cycle"
+import {
+	type SupremacyState,
+	createInitialSupremacy,
+	updateSupremacy,
+	shouldRandomize,
+	resetSupremacy,
+} from "../music/supremacy-tracker"
 import {
 	serializeBarSnapshot,
 	serializeMusicState,
-	deserializeScheduledBar,
+	deserializeBarMeta,
+	type ScheduleWorkerMsgWire,
+	type BarMetaWire,
 } from "../music/worker-serialization"
-import type { ScheduleWorkerRequest, ScheduleWorkerResponse } from "../music/schedule-worker"
+import type { ScheduleWorkerRequest } from "../music/schedule-worker"
+import {
+	buildPlayTimeContext,
+	computePlaybackParams,
+	type PlaybackParams,
+	type PlayTimeContext,
+} from "../music/play-time-params"
 import {
 	barDuration,
 	barStartTime as barStartTimeFn,
@@ -68,7 +88,8 @@ import type {
 	BarSnapshot,
 	GlobalMetrics,
 	MusicState,
-	ScheduledBar,
+	ScheduleWorkerBarMeta,
+	SlotNote,
 	SnapshotOrganelle,
 	SnapshotOrganism,
 } from "../music/types"
@@ -145,6 +166,8 @@ function matrixFromJSON(json: string, types: readonly string[]): ForceMatrix {
 
 const MAX_PARTICLES = 10000
 const MAX_TYPES = 32
+const DENSITY_TARGET = 0.0017 // particles per pixel at scale 1.0
+const MIN_PER_ACTIVE_TYPE = 300
 const PARTICLE_STRIDE = 48 // bytes per Particle struct (must match WGSL)
 const WORKGROUP_SIZE = 64
 
@@ -154,7 +177,7 @@ const WORKGROUP_SIZE = 64
 
 export class RandomDots implements Simulation {
 	name = "Random Dots"
-	settingsVersion = "2026-03-28r"
+	settingsVersion = "2026-03-30"
 
 	// GPU resources
 	private device: GPUDevice | null = null
@@ -327,10 +350,7 @@ export class RandomDots implements Simulation {
 	private pointSize = 27.0
 	private pulseScale = 6
 	private curveEditor: CurveEditor | null = null
-	private staccatoCurveEditor: CurveEditor | null = null
-	private lpfCurveEditor: CurveEditor | null = null
 	private envelopeEditor: EnvelopeEditor | null = null
-	private bassEnvelopeEditor: EnvelopeEditor | null = null
 
 	// Per-effect shader params (effectId → [param0, param1, ...])
 	private particleEffectParams: Record<string, number[]> = {
@@ -352,9 +372,6 @@ export class RandomDots implements Simulation {
 
 	// Force matrix (single source of truth for inter-type forces)
 	private forceMatrix: ForceMatrix = {}
-	private autoRandomizeMatrixEnabled = true
-	private autoRandomizeCountsEnabled = true
-	private consecutiveQuartalBars = 0
 	private affectRadius = 61.1
 	private forceRepelDistance = 40.72
 	private baseStrength = 207.94
@@ -426,40 +443,64 @@ export class RandomDots implements Simulation {
 	private _matrixContainer: HTMLElement | null = null
 	private _matrixRootContainer: HTMLElement | null = null
 	private _particlesContainer: HTMLElement | null = null
-	private _autoRandomizeMatrixClock: MiniClock | null = null
-	private _autoRandomizeCountsClock: MiniClock | null = null
 
 	// Dirty flags — avoid re-uploading every frame
 	private forceMatrixDirty = true
 	private particleBufferDirty = true
 
 	// Music engine (bar-boundary architecture)
+	/** Min organism age (fraction of a bar) to qualify for play — shared by
+	 *  the scheduler config and the cycle's species-eligibility filter. */
+	private static readonly QUALIFICATION_FRACTION = 0.5
 	private audioGraph = new AudioGraph()
-	private bassLayer = new BassLayer()
 	private musicState: MusicState | null = null
-	private currentScheduledBar: ScheduledBar | null = null
 	private musicBarNumber = -1
 	private tSoundStart = 0
 	private scheduleWorker: Worker | null = null
 	private scheduleWorkerReqId = 0
 	private pendingBarRequest = false
+	private _lastBlockLog = 0
 	private musicBpm = 90
 	private musicTimeMultiplier = 1
-	private musicBeatsPerBar = 4
+	/** How many bars each computed melody plays before the next is calculated. */
+	private barsPerMelody = 2
+	/** 0-based index of the current bar within its melody repeat group. */
+	private barRepeatIndex = 0
 	private overtonePhaseRate = 1
 	private preferNiceModes = false
-	private phrasePattern: BassDensity[] = [...DEFAULT_PHRASE_CELLS]
-	private phraseMirror = false
+	private rootStrategy: RootStrategy = "table"
+	private organismCycle: OrganismCycle = createInitialCycle()
+	private supremacyState: SupremacyState = createInitialSupremacy()
+	private autoRandomizeMatrixEnabled = true
+	private autoRandomizeCountsEnabled = true
+	private cyclesBeforeRandomize = 3
+	private fallbackBars = 8
+	private fallbackEnabled = true
+	private prevCycleNumber = 0
 	private voiceBudget = 32
+	private playTimeCtx: PlayTimeContext | null = null
+	/** Cache of last-known playback params so notes still play if an organism/organelle disappears mid-bar. */
+	private playbackParamsCache = new Map<string, PlaybackParams>()
+	/** Persistent worker message listener for streaming bar results. */
+	private workerMsgHandler: ((e: MessageEvent) => void) | null = null
+	/** Bar-meta from the current streaming bar (set on bar-meta, used for music state). */
+	private pendingBarMeta: ScheduleWorkerBarMeta | null = null
 	private latestGlobalMetrics: GlobalMetrics | null = null
 	private mutedOrganisms = new Set<string>()
 	private readbackBuffer: GPUBuffer | null = null
 	private readbackPending = false
 	private frameCounter = 0
 
-	// Detection
+	// Detection (offloaded to worker)
 	private detectionState: DetectionFrame | null = null
 	private detectionConfig: DetectionConfig = { ...DEFAULT_DETECTION_CONFIG }
+	private detectionWorker: Worker | null = null
+	private detectionMsgId = 0
+	private detectionWorkerBusy = false
+	/** Serialized prev frame kept in sync for the worker. */
+	private prevFrameWire: DetectionFrameWire | null = null
+	/** Last particle count from readback, used by worker response for overlay upload. */
+	private lastParticleCount = 0
 
 	// Organism registry (stable identity across frames)
 	private organismRegistry: OrganismRegistry | null = null
@@ -583,7 +624,6 @@ export class RandomDots implements Simulation {
 		this.cleanup()
 		this.initEffectParams()
 		this.audioGraph = new AudioGraph()
-		this.bassLayer = new BassLayer()
 		this.device = gpu.device
 		this.canvas = gpu.canvas
 		this.canvasContext = gpu.canvasContext
@@ -941,50 +981,97 @@ export class RandomDots implements Simulation {
 		// Swap ping-pong
 		this.pingPong = 1 - this.pingPong
 
-		// Bar-boundary music scheduling — Web Worker pattern.
-		// The heavy scheduleBar computation runs off-thread.  A 200ms
-		// look-ahead is safe because the main thread only posts a message
-		// (no jank).  The worker responds with the ScheduledBar and the
-		// main thread creates audio nodes + visual pulses.
+		// Bar-boundary music scheduling — streaming Web Worker pattern.
+		// The worker streams bar-meta, per-organism slot-fills, and done.
+		// The main thread fills a tuplet grid; the scrubber plays notes
+		// just-in-time, resolving playback params from live sim state.
 		if (this.audioGraph.isEnabled) {
 			const barDur = barDuration(
 				this.musicBpm,
-				this.musicBeatsPerBar,
 				this.musicTimeMultiplier,
 			)
 			const now = this.audioGraph.currentTime
 
-			const WORKER_LOOKAHEAD = 0.020
+			// Wide enough that the worker round-trip comfortably beats the
+			// scrubber's JIT lookahead; the double-buffered grid keeps the
+			// current bar playing meanwhile.
+			const WORKER_LOOKAHEAD = 0.350
 			const nextBar = this.musicBarNumber + 1
 			const nextBarStart = barStartTimeFn(this.tSoundStart, nextBar, barDur)
 
-			if (
-				now + WORKER_LOOKAHEAD >= nextBarStart
+			const _timeReady = now + WORKER_LOOKAHEAD >= nextBarStart
+			if (_timeReady && (this.pendingBarRequest || !this.detectionState || !this.latestGlobalMetrics)) {
+				if (!this._lastBlockLog || now - this._lastBlockLog > 1) {
+					this._lastBlockLog = now
+					console.warn(`⏳ Bar ${nextBar} NOT scheduled: pending=${this.pendingBarRequest} detection=${!!this.detectionState} metrics=${!!this.latestGlobalMetrics}`)
+				}
+			}
+
+			// Melody hold: replay the current computed bar for `barsPerMelody`
+			// bars before calculating a new one. The organism cycle, chord
+			// degree, drone, and note grid all hold still during repeat bars,
+			// so the melody stays consistent — only live expression (volume,
+			// pan, envelope) keeps tracking the simulation.
+			const wantRepeatBar =
+				_timeReady
+				&& !this.pendingBarRequest
+				&& this.detectionState
+				&& this.latestGlobalMetrics
+				&& this.barRepeatIndex + 1 < this.barsPerMelody
+
+			if (wantRepeatBar && this.audioGraph.repeatGrid(nextBarStart, barDur)) {
+				this.musicBarNumber = nextBar
+				this.barRepeatIndex++
+				console.log(`🔁 Bar ${nextBar} holds melody (${this.barRepeatIndex + 1}/${this.barsPerMelody})`)
+			} else if (
+				_timeReady
 				&& !this.pendingBarRequest
 				&& this.detectionState
 				&& this.latestGlobalMetrics
 			) {
+				this.barRepeatIndex = 0
 				this.musicBarNumber = nextBar
 				this.pendingBarRequest = true
 
 				// Build snapshot (cheap — reads existing detection state)
-				const snapshot = this.buildBarSnapshot()
+				const snapshot = this.buildBarSnapshot(nextBarStart, barDur, nextBar)
 
 				const config: ScheduleConfig = {
 					barsPerPhase: this.overtonePhaseRate,
-					qualificationFraction: 0.5,
+					qualificationFraction: RandomDots.QUALIFICATION_FRACTION,
 					preferNiceModes: this.preferNiceModes,
-					beatsPerBar: this.musicBeatsPerBar,
 				}
 
 				// Capture values needed by the response handler
 				const barStart = nextBarStart
 				const reqBarDur = barDur
-				const reqBeatsPerBar = this.musicBeatsPerBar
 				const reqBarNumber = nextBar
+
+				// ── Debug: bar scheduling overview ──
+				console.group(`🎵 Bar ${nextBar} scheduled`)
+				console.log(`  BPM: ${this.musicBpm} | timeMultiplier: ${this.musicTimeMultiplier} | barDur: ${barDur.toFixed(3)}s`)
+				console.log(`  barStart: ${barStart.toFixed(3)}s | now: ${now.toFixed(3)}s | lookahead: ${WORKER_LOOKAHEAD}s`)
+				console.log(`  organisms: ${snapshot.organisms.length} | activeSpecies: ${snapshot.activeSpecies ?? "ALL"}`)
+				console.log(`  rootOverride: ${snapshot.rootOverride} | preferNiceModes: ${this.preferNiceModes}`)
+				console.log(`  organismCycle: idx=${this.organismCycle.currentIndex} cycle#=${this.organismCycle.cycleNumber} visited=${[...this.organismCycle.visitedSpecies].join(",")||"none"}`)
+				if (snapshot.organisms.length === 0) {
+					console.warn(`  ⚠️ NO ORGANISMS — only drone will play, no notes scheduled`)
+				} else {
+					for (const org of snapshot.organisms) {
+						const types = [...org.composition.entries()].map(([t, c]) => `type${t}×${c}`).join(", ")
+						const isActive = snapshot.activeSpecies == null || org.colorSignature === snapshot.activeSpecies
+						console.log(`  organism ${org.registryId} [${org.colorSignature.slice(0,12)}] ${isActive ? "✓active" : "✗filtered"} | organelles: ${org.organelles.length} (${types}) | age: ${((barStart - org.creationTime) / barDur).toFixed(1)} bars`)
+					}
+				}
+				console.groupEnd()
 
 				const worker = this.ensureScheduleWorker()
 				const reqId = ++this.scheduleWorkerReqId
+
+				// Allocate fresh grid for this bar (the current bar's grid keeps
+				// playing — grids are double-buffered). The params cache persists
+				// across bars so flickering species keep their last-known sound.
+				this.audioGraph.initGrid(barStart, reqBarDur)
 
 				const req: ScheduleWorkerRequest = {
 					id: reqId,
@@ -994,115 +1081,236 @@ export class RandomDots implements Simulation {
 					barDur: reqBarDur,
 					prevState: serializeMusicState(this.musicState),
 					config,
-					voiceBudget: this.voiceBudget,
 				}
 
 				worker.postMessage(req)
 
-				// One-shot handler for this request
-				const onResponse = (e: MessageEvent<ScheduleWorkerResponse>) => {
-					const resp = e.data
-					if (resp.id !== reqId) return
-					worker.removeEventListener("message", onResponse)
-					this.pendingBarRequest = false
-
-					const scheduled = deserializeScheduledBar(resp.scheduled)
-					const culled = deserializeScheduledBar(resp.culled)
-
-					// Play the bar and trigger visual pulses
-					const hitTimings = this.audioGraph.playScheduledBar(culled)
-					this.triggerVisualPulses(culled, hitTimings)
-
-					// Update bass layer
-					const phraseSeq = expandPhrase(this.phrasePattern, this.phraseMirror)
-					this.bassLayer.applyUpdate(
-						scheduled.bassUpdate,
-						barStart,
-						reqBarDur,
-						reqBeatsPerBar,
-						scheduled.barNumber,
-						phraseSeq,
-					)
-
-					// Track consecutive quartal-stack bars
-					if (scheduled.bassUpdate.isQuartalStack) {
-						this.consecutiveQuartalBars++
-						if (this.consecutiveQuartalBars >= 2) {
-							this.consecutiveQuartalBars = 0
-							const qTypes = this.getTypeIds()
-							this.forceMatrix = randomizeMatrix(qTypes)
-							this.forceMatrixDirty = true
-							this.speciesPresence.clear()
-							this.speciesBrightness.clear()
-							if (this._matrixWrapper)
-								this.syncMatrixUI(this._matrixWrapper, qTypes)
-							if (this._matrixContainer)
-								this.syncMatrixHidden(this._matrixContainer)
-							if (this._matrixRootContainer) {
-								this._matrixRootContainer.dispatchEvent(
-									new Event("change", { bubbles: true }),
-								)
-							}
-						}
-					} else {
-						this.consecutiveQuartalBars = 0
-					}
-
-					// Auto-randomize one bar before phrase cycle restarts
-					const { idx: phraseIdx, len: phraseLen } = this.phrasePosition(reqBarNumber)
-					if (phraseLen > 0 && phraseIdx === phraseLen - 2) {
-						if (this.autoRandomizeMatrixEnabled) {
-							const arTypes = this.getTypeIds()
-							this.forceMatrix = randomizeMatrix(arTypes)
-							this.forceMatrixDirty = true
-							this.speciesPresence.clear()
-							this.speciesBrightness.clear()
-							if (this._matrixWrapper)
-								this.syncMatrixUI(this._matrixWrapper, arTypes)
-							if (this._matrixContainer)
-								this.syncMatrixHidden(this._matrixContainer)
-							if (this._matrixRootContainer) {
-								this._matrixRootContainer.dispatchEvent(
-									new Event("change", { bubbles: true }),
-								)
-							}
-						}
-						if (this.autoRandomizeCountsEnabled) {
-							this.randomizeCounts()
-						}
-					}
-
-					// Update music state for next bar
-					this.musicState = {
-						currentBarNumber: reqBarNumber,
-						currentMode: scheduled.mode,
-						currentRootMidi: scheduled.rootMidi,
-						netStability: scheduled.netStability,
-						prevScheduledBar: scheduled,
-						isBufferBar: scheduled.isBufferBar,
-						bufferChord: scheduled.bufferChord,
-						envelopeRanges: scheduled.envelopeRanges,
-						speciesCycle: scheduled.speciesCycle,
-					}
-					this.currentScheduledBar = culled
+				// Remove old handler if any
+				if (this.workerMsgHandler) {
+					worker.removeEventListener("message", this.workerMsgHandler)
 				}
 
-				worker.addEventListener("message", onResponse)
+				// Persistent streaming handler for this bar
+				this.workerMsgHandler = (e: MessageEvent<ScheduleWorkerMsgWire>) => {
+					const msg = e.data
+					if (!("kind" in msg) || msg.id !== reqId) return
+
+					switch (msg.kind) {
+						case "bar-meta": {
+							const meta = deserializeBarMeta(msg as BarMetaWire)
+							this.pendingBarMeta = meta
+
+							// ── Debug: bar-meta from worker ──
+							console.group(`🎶 Bar ${reqBarNumber} meta received`)
+							console.log(`  mode: ${meta.mode.name} | root: ${meta.rootMidi} (${["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][meta.rootMidi % 12]}) | stability: ${meta.netStability.toFixed(3)}`)
+							console.log(`  isBufferBar: ${meta.isBufferBar} | bufferChord: ${meta.bufferChord ? "yes" : "none"}`)
+							console.log(`  scale semitones: [${meta.mode.scaleSemitones.join(",")}]`)
+							console.log(`  spatialEntropy: ${meta.spatialEntropy.toFixed(3)}`)
+							if (snapshot.organisms.length === 0) {
+								console.warn(`  ⚠️ 0 organisms — matrix pad only this bar`)
+							}
+							console.groupEnd()
+
+							// Set reverb from entropy
+							this.audioGraph.setReverbFromEntropy(meta.spatialEntropy, barStart)
+
+							// Particle chorus drones — the full frequency range subdivided
+							// by the particle population, clustered on this bar's chord
+							// with micro-detune, bass-weighted, always on
+							this.audioGraph.updateDronePad(
+								computeDroneVoices(
+									this.particles.length,
+									meta.chordPitchClasses,
+								),
+								barStart,
+							)
+
+							// Update music state
+							this.musicState = {
+								currentBarNumber: reqBarNumber,
+								currentMode: meta.mode,
+								currentRootMidi: meta.rootMidi,
+								netStability: meta.netStability,
+								isBufferBar: meta.isBufferBar,
+								bufferChord: meta.bufferChord,
+								envelopeRanges: meta.envelopeRanges,
+								speciesCycle: meta.speciesCycle,
+								organismCycleNumber: this.organismCycle.cycleNumber,
+							}
+
+							// Supremacy-based auto-randomize
+							const cycleCompleted = this.organismCycle.cycleNumber > this.prevCycleNumber
+							this.prevCycleNumber = this.organismCycle.cycleNumber
+							this.supremacyState = updateSupremacy(
+								this.supremacyState, snapshot.organisms, cycleCompleted,
+							)
+							const shouldRand = shouldRandomize(this.supremacyState, {
+								cyclesBeforeRandomize: this.cyclesBeforeRandomize,
+								fallbackBars: this.fallbackBars,
+								fallbackEnabled: this.fallbackEnabled,
+							})
+							if (shouldRand) {
+								// Cached playback params embody the old regime's matrix
+								// (waveform, volume, pan) — recurring signatures in the
+								// new regime must not replay them
+								this.playbackParamsCache.clear()
+								if (this.autoRandomizeMatrixEnabled) {
+									const arTypes = this.getTypeIds()
+									this.forceMatrix = randomizeMatrix(arTypes)
+									this.forceMatrixDirty = true
+									this.speciesPresence.clear()
+									this.speciesBrightness.clear()
+									if (this._matrixWrapper)
+										this.syncMatrixUI(this._matrixWrapper, arTypes)
+									if (this._matrixContainer)
+										this.syncMatrixHidden(this._matrixContainer)
+									if (this._matrixRootContainer) {
+										this._matrixRootContainer.dispatchEvent(
+											new Event("change", { bubbles: true }),
+										)
+									}
+								}
+								if (this.autoRandomizeCountsEnabled) {
+									this.randomizeCounts()
+								}
+								this.supremacyState = resetSupremacy()
+							}
+							break
+						}
+
+						case "slot-fill": {
+							this.audioGraph.fillSlot(msg.tierIndex, msg.slotIndex, msg.notes)
+							// Pre-warm the params cache so a note whose species flickers
+							// out at play time still has a fallback on its first play
+							if (this.playTimeCtx) {
+								for (const n of msg.notes) {
+									const key = `${n.speciesSignature}:${n.typeId}:${n.subdivisionIndex}`
+									const params = computePlaybackParams(n, this.playTimeCtx)
+									if (params) this.playbackParamsCache.set(key, params)
+								}
+							}
+							for (const n of msg.notes) {
+								console.log(`  📥 slot-fill tier=${msg.tierIndex} slot=${msg.slotIndex} midi=${n.midiNote} species=${n.speciesSignature.slice(0,12)} type=${n.typeId}`)
+							}
+							break
+						}
+
+						case "done": {
+							this.pendingBarRequest = false
+							// Count total notes in the grid
+							const grid = this.audioGraph.getGrid()
+							let totalNotes = 0
+							if (grid) {
+								for (const tier of grid.tiers) {
+									for (const slot of tier) {
+										if (slot) totalNotes += slot.length
+									}
+								}
+							}
+							console.log(`🏁 Bar ${reqBarNumber} done — ${totalNotes} notes in grid`)
+							if (totalNotes === 0) {
+								console.warn(`  ⚠️ Grid is EMPTY — no notes will play this bar!`)
+							}
+							break
+						}
+					}
+				}
+
+				worker.addEventListener("message", this.workerMsgHandler)
 			}
 
-			// Continuous bass layer volume updates (not bar-quantized, §9.4)
-			if (this.latestGlobalMetrics) {
-				this.bassLayer.updateFreeParticleVolumes(
-					this.latestGlobalMetrics.freeParticlePercentByType,
+			// Build play-time context from live state (for grid scrubber)
+			if (this.organismRegistry && this.detectionState && this.musicState?.envelopeRanges && this.canvas) {
+				this.playTimeCtx = buildPlayTimeContext(
+					this.organismRegistry,
+					this.detectionState,
+					this.detectionConfig.proximityRadius || 18,
+					this.musicState.envelopeRanges,
+					this.forceMatrix,
+					this.getTypeIds(),
+					this.canvas.width,
+					barDur,
+					barStartTimeFn(this.tSoundStart, this.musicBarNumber, barDur),
 				)
 			}
+
+			// Grid-based just-in-time AudioNode creation + visual pulses
+			if (this.playTimeCtx) {
+				const ptCtx = this.playTimeCtx
+				const cache = this.playbackParamsCache
+				const barNum = this.musicBarNumber
+				const audioNow = this.audioGraph.currentTime
+				const perfNow = performance.now() / 1000
+				const manualShape = this.envelopeEditor?.getShape() ?? null
+				const pScale = this.getEffectiveParams().pulseScale
+
+				this.audioGraph.tickGridScheduler(
+					(note: SlotNote) => {
+						const key = `${note.speciesSignature}:${note.typeId}:${note.subdivisionIndex}`
+						const params = computePlaybackParams(note, ptCtx)
+						if (params) {
+							cache.set(key, params)
+							console.log(`  ▶ PLAY midi=${note.midiNote} species=${note.speciesSignature.slice(0,12)} type=${note.typeId} vol=${params.volume.toFixed(3)} gate=${params.gateDuration.toFixed(3)}s pan=${params.pan.toFixed(2)}`)
+							return params
+						}
+						// Species disappeared — use last known params
+						const cached = cache.get(key) ?? null
+						if (!cached) {
+							console.warn(`  ✗ SKIP midi=${note.midiNote} species=${note.speciesSignature.slice(0,12)} type=${note.typeId} — species dead, no cache`)
+						} else {
+							console.log(`  ▶ PLAY (cached) midi=${note.midiNote} species=${note.speciesSignature.slice(0,12)} type=${note.typeId}`)
+						}
+						return cached
+					},
+					// Visual pulse callback — fires when a note is actually played
+					(note, params, time) => {
+						if (pScale <= 0) return
+						const particles = this.snapshotPulseParticles(
+							note.speciesSignature,
+							note.typeId,
+							note.subdivisionIndex,
+						)
+						if (!particles) return
+
+						const perfStart = perfNow + (time - audioNow)
+						const key = `${note.speciesSignature}:${note.typeId}:${note.subdivisionIndex}:${barNum}`
+
+						// Gate-aware timing from resolved params
+						let atkDur = params.envelope.attackDuration
+						let decDur = params.envelope.decayDuration
+						const gateDur = params.gateDuration
+						if (gateDur < atkDur + decDur) {
+							const ratio = gateDur / (atkDur + decDur)
+							atkDur *= ratio
+							decDur *= ratio
+						}
+						const susDur = Math.max(0, gateDur - atkDur - decDur)
+						const relDur = params.envelope.releaseDuration
+						const totalDur = atkDur + decDur + susDur + relDur
+
+						this.activePulses.set(key, {
+							startTime: perfStart,
+							duration: totalDur,
+							particleIndices: particles,
+							attackFrac: atkDur / totalDur,
+							decayFrac: decDur / totalDur,
+							sustainFrac: susDur / totalDur,
+							peakLevel: params.envelope.peakLevel,
+							sustainLevel: params.envelope.sustainLevel,
+							envelopeLut: manualShape
+								? buildGateAwareLUT(manualShape, atkDur, decDur, susDur, relDur, 128)
+								: null,
+						})
+					},
+				)
+			}
+
 		}
 
 		// Bar visualizer (runs every frame for smooth scrubber — only when sound is on)
 		if (this.audioGraph.isEnabled) {
 			const bvBarDur = barDuration(
 				this.musicBpm,
-				this.musicBeatsPerBar,
 				this.musicTimeMultiplier,
 			)
 			const bvNow = this.audioGraph.currentTime
@@ -1112,32 +1320,20 @@ export class RandomDots implements Simulation {
 				bvVisualBar,
 				bvBarDur,
 			)
-			const phraseSeqExpanded = expandPhrase(
-				this.phrasePattern,
-				this.phraseMirror,
-			)
-			const phraseIdxMap = expandPhraseIndices(
-				this.phrasePattern,
-				this.phraseMirror,
-			)
-			const seqLen = phraseSeqExpanded.length
-			const cycleOrigin = this.bassLayer.cycleOrigin
-			const phraseBarInCycle =
-				cycleOrigin != null && seqLen > 0
-					? (((bvVisualBar - cycleOrigin) % seqLen) + seqLen) % seqLen
-					: -1
+			const meta = this.pendingBarMeta
 			updateBarVisualizer({
-				scheduledBar: this.currentScheduledBar,
+				grid: this.audioGraph.getGrid(bvNow),
+				barNumber: this.musicBarNumber,
 				barStartTime: bvBarStart,
 				barDuration: bvBarDur,
-				beatsPerBar: this.musicBeatsPerBar,
-				bpm: this.musicBpm,
+					bpm: this.musicBpm,
 				now: bvNow,
 				groupColors: this.groupColors,
 				typeKeys: this.getTypeIds(),
-				phraseBarInCycle,
-				phraseSequenceLength: seqLen,
-				phraseIndices: phraseIdxMap,
+				rootMidi: meta?.rootMidi ?? null,
+				modeName: meta?.mode.name ?? null,
+				bufferChordName: meta?.bufferChord?.name ?? null,
+				isBufferBar: meta?.isBufferBar ?? false,
 			})
 		}
 
@@ -1153,10 +1349,9 @@ export class RandomDots implements Simulation {
 			this._phaseClock.value =
 				(this.musicBarNumber % this.overtonePhaseRate) / this.overtonePhaseRate
 		}
-		if ((this._latchClock || this.lpfCurveEditor) && this.audioGraph.isEnabled) {
+		if (this._latchClock && this.audioGraph.isEnabled) {
 			const barDur = barDuration(
 				this.musicBpm,
-				this.musicBeatsPerBar,
 				this.musicTimeMultiplier,
 			)
 			const now = this.audioGraph.currentTime
@@ -1165,37 +1360,14 @@ export class RandomDots implements Simulation {
 				this.musicBarNumber,
 				barDur,
 			)
-			if (this._latchClock) {
-				const beatDur = barDur / this.musicBeatsPerBar
-				const latchDur = beatDur * this.detectionConfig.organelleLatchBeats
-				if (latchDur > 0) {
-					const elapsed = now - barStart
-					this._latchClock.value = (elapsed % latchDur) / latchDur
-				}
-			}
-			// Update master bus LPF cutoff from curve position in bar
-			if (this.lpfCurveEditor && barDur > 0) {
+			const beatDur = barDur / 4
+			const latchDur = beatDur * this.detectionConfig.organelleLatchBeats
+			if (latchDur > 0) {
 				const elapsed = now - barStart
-				const barFraction = Math.max(0, Math.min(1, elapsed / barDur))
-				this.audioGraph.updateLpfFromBarPosition(barFraction)
+				this._latchClock.value = (elapsed % latchDur) / latchDur
 			}
 		}
 
-		if (this._autoRandomizeMatrixClock || this._autoRandomizeCountsClock) {
-			const { idx, len } = this.phrasePosition(this.musicBarNumber)
-			const progress =
-				this.audioGraph.isEnabled && len > 0 && idx >= 0 ? idx / len : 0
-			if (this._autoRandomizeMatrixClock) {
-				this._autoRandomizeMatrixClock.value = this.autoRandomizeMatrixEnabled
-					? progress
-					: 0
-			}
-			if (this._autoRandomizeCountsClock) {
-				this._autoRandomizeCountsClock.value = this.autoRandomizeCountsEnabled
-					? progress
-					: 0
-			}
-		}
 
 		// Readback particle data every ~6 frames (~10Hz at 60fps)
 		// Used for detection pipeline and audio spatial metrics
@@ -1306,85 +1478,63 @@ export class RandomDots implements Simulation {
 					this.prevVelX = nextVelX
 					this.prevVelY = nextVelY
 
-					// Run detection pipeline
+					// Run detection pipeline in worker
 					const now = performance.now() / 1000
 					const dt =
 						this.lastReadbackTime > 0 ? now - this.lastReadbackTime : 0.1
 					this.lastReadbackTime = now
 
-					const readbackData: ReadbackData = {
-						n,
-						posX,
-						posY,
-						velX,
-						velY,
-						particleTypes,
-						particleCells,
-						cellHeads,
-						cellNext,
-						cols,
-						rows,
-						cellSize,
-						width: w,
-						height: h,
-					}
 					const scaledDetConfig: DetectionConfig = {
 						...this.detectionConfig,
 						proximityRadius: this.detectionConfig.proximityRadius * this.scale,
 						organismProximityRadius:
 							this.detectionConfig.organismProximityRadius * this.scale,
 					}
-					this.detectionState = runDetection(
-						readbackData,
-						this.detectionState,
-						scaledDetConfig,
-						dt,
-						this.musicBpm,
-						this.forceMatrix,
-						types,
-					)
 
-					// Compute global metrics for music pipeline
-					const typeCounts = new Map<number, number>()
-					for (let i = 0; i < n; i++) {
-						const ti = particleTypes[i]
-						typeCounts.set(ti, (typeCounts.get(ti) ?? 0) + 1)
-					}
-					this.latestGlobalMetrics = computeGlobalMetrics(
-						readbackData,
-						this.detectionState,
-						typeCounts,
-						this.detectionState,
-						this.organismPrediction,
-						this.getTypeIds(),
-					)
-					if (
-						this.showOrganelleOverlay ||
-						this.showOrganismOverlay ||
-						this.showOrganismCentroids
-					) {
-						this.uploadDetectionIds(this.detectionState, n)
-					}
-					if (this.showOrganismOverlay || this.showOrganismCentroids) {
-						this.uploadOrganismCentroids(this.detectionState)
-						this.uploadOsmLevelCentroids(this.detectionState)
-					}
-					this.updateLedgerUI()
-
-					// Update organism registry for stable identity tracking
-					if (this.detectionState) {
-						const organelleMap = new Map<number, OrganelleState>()
-						for (const org of this.detectionState.organelles) {
-							organelleMap.set(org.id, org)
+					// Compute typeCounts before transferring arrays
+					const typeCounts: [number, number][] = []
+					{
+						const tcMap = new Map<number, number>()
+						for (let i = 0; i < n; i++) {
+							const ti = particleTypes[i]
+							tcMap.set(ti, (tcMap.get(ti) ?? 0) + 1)
 						}
-						this.organismRegistry = updateRegistry(
-							this.organismRegistry,
-							this.detectionState,
-							organelleMap,
+						for (const entry of tcMap) typeCounts.push(entry)
+					}
+
+					if (!this.detectionWorkerBusy) {
+						this.detectionWorkerBusy = true
+						const worker = this.ensureDetectionWorker()
+						const reqId = ++this.detectionMsgId
+
+						const req: DetectionWorkerRequest = {
+							id: reqId,
+							n,
+							posX,
+							posY,
+							velX,
+							velY,
+							particleTypes,
+							particleCells,
+							cellHeads,
+							cellNext,
+							cols,
+							rows,
+							cellSize,
+							width: w,
+							height: h,
+							config: scaledDetConfig,
 							dt,
-							80,
-							this.audioGraph.currentTime,
-						)
+							bpm: this.musicBpm,
+							forceMatrix: this.forceMatrix,
+							typeKeys: types,
+							prevFrame: this.prevFrameWire,
+							typeCounts,
+							organismPrediction: this.organismPrediction,
+						}
+
+						this.lastParticleCount = n
+						worker.postMessage(req)
 					}
 
 					readback.unmap()
@@ -3989,30 +4139,120 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 	/**
 	 * Re-anchor the bar grid so the next bar boundary fires immediately.
-	 * Called when BPM, time multiplier, or beats-per-bar change mid-playback.
+	 * Called when BPM or time multiplier change mid-playback.
 	 */
+	private ensureDetectionWorker(): Worker {
+		if (!this.detectionWorker) {
+			this.detectionWorker = new Worker(
+				new URL("../detection-worker.ts", import.meta.url),
+				{ type: "module" },
+			)
+			this.detectionWorker.onmessage = (e: MessageEvent<DetectionWorkerResponse>) => {
+				const resp = e.data
+				this.detectionWorkerBusy = false
+
+				// Deserialize the detection frame
+				const frame = deserializeDetectionFrame(resp.frame)
+				this.detectionState = frame
+				this.prevFrameWire = resp.frame
+
+				// Deserialize global metrics
+				this.latestGlobalMetrics = {
+					freeParticleCount: resp.metrics.freeParticleCount,
+					freeParticlePercentByType: new Map(resp.metrics.freeParticlePercentByType),
+					avgVelocity: resp.metrics.avgVelocity,
+					avgOrganelleDensity: resp.metrics.avgOrganelleDensity,
+					speciesCount: resp.metrics.speciesCount,
+					organismCount: resp.metrics.organismCount,
+					spatialEntropy: resp.metrics.spatialEntropy,
+					events: resp.metrics.events as GlobalMetrics["events"],
+					organismFulfillment: resp.metrics.organismFulfillment,
+				}
+
+				// Upload overlays if enabled
+				if (
+					this.showOrganelleOverlay ||
+					this.showOrganismOverlay ||
+					this.showOrganismCentroids
+				) {
+					this.uploadDetectionIds(frame, this.lastParticleCount)
+				}
+				if (this.showOrganismOverlay || this.showOrganismCentroids) {
+					this.uploadOrganismCentroids(frame)
+					this.uploadOsmLevelCentroids(frame)
+				}
+				this.updateLedgerUI()
+
+				// Update organism registry for stable identity tracking
+				const organelleMap = new Map<number, OrganelleState>()
+				for (const org of frame.organelles) {
+					organelleMap.set(org.id, org)
+				}
+				this.organismRegistry = updateRegistry(
+					this.organismRegistry,
+					frame,
+					organelleMap,
+					0.1, // approximate dt — registry matching is tolerant
+					80,
+					this.audioGraph.currentTime,
+					this.width,
+					this.height,
+				)
+			}
+		}
+		return this.detectionWorker
+	}
+
 	private ensureScheduleWorker(): Worker {
 		if (!this.scheduleWorker) {
 			this.scheduleWorker = new Worker(
 				new URL("../music/schedule-worker.ts", import.meta.url),
 				{ type: "module" },
 			)
+			// A worker that fails to load (stale deploy, 404'd chunk) never
+			// posts `done`; without this, pendingBarRequest would stay true
+			// forever and music scheduling would stall until page reload.
+			this.scheduleWorker.addEventListener("error", (e) => {
+				console.error("schedule-worker error — unblocking scheduler", e)
+				this.pendingBarRequest = false
+			})
 		}
 		return this.scheduleWorker
 	}
 
+	/**
+	 * Re-anchor the bar timeline (BPM/time-multiplier change, sound
+	 * re-enable). Flushes everything dated on the old timeline: live tuplet
+	 * grids (or their future-dated slots would replay over the new bar 0),
+	 * the in-flight worker request (its bar numbering is stale), and the
+	 * pending bar-meta.
+	 */
 	private resetBarGrid(): void {
 		if (this.audioGraph.isEnabled) {
 			this.tSoundStart = this.audioGraph.currentTime
 			this.musicBarNumber = -1
-			this.currentScheduledBar = null
+			this.barRepeatIndex = 0
+			this.audioGraph.clearGrids()
+			if (this.workerMsgHandler && this.scheduleWorker) {
+				this.scheduleWorker.removeEventListener(
+					"message",
+					this.workerMsgHandler,
+				)
+				this.workerMsgHandler = null
+			}
+			this.pendingBarRequest = false
+			this.pendingBarMeta = null
 		}
 	}
 
 	/**
 	 * Build a BarSnapshot from current detection state for the hit scheduler.
 	 */
-	private buildBarSnapshot(): BarSnapshot {
+	private buildBarSnapshot(
+		barStartTime: number,
+		barDur: number,
+		barNumber: number,
+	): BarSnapshot {
 		const typeKeys = this.getTypeIds()
 		const organisms: SnapshotOrganism[] = []
 
@@ -4087,9 +4327,45 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 					creationTime: ro.creationTime,
 					organelles: snapshotOrganelles,
 					composition,
+					typeAdjacency: extractTypeAdjacency(ro.tree),
 				})
 			}
 		}
+
+		// Advance organism cycle and derive root
+		const organismTrees = new Map<number, OrganelleTreeNode>()
+		if (this.organismRegistry) {
+			for (const ro of this.organismRegistry.organisms) {
+				organismTrees.set(ro.registryId, ro.tree)
+			}
+		}
+		this.organismCycle = buildOrganismCycle(organisms, this.organismCycle)
+
+		// Species eligibility: at least one organism old enough to qualify.
+		// Prevents the cycle from picking a species whose organisms would all
+		// fail the scheduler's age gate, which would silence the whole bar.
+		// Bar 0 is exempt — everything is born at t=0.
+		let eligibleSpecies: ReadonlySet<string> | null = null
+		if (barNumber !== 0) {
+			const eligible = new Set<string>()
+			for (const org of organisms) {
+				const ageInBars = (barStartTime - org.creationTime) / barDur
+				if (ageInBars >= RandomDots.QUALIFICATION_FRACTION) {
+					eligible.add(org.colorSignature)
+				}
+			}
+			eligibleSpecies = eligible
+		}
+
+		const { cycle: advancedCycle, organism: _cycleOrganism, chordDegreeIndex } = advanceCycle(
+			this.organismCycle, organisms, organismTrees, this.rootStrategy, eligibleSpecies,
+		)
+		this.organismCycle = advancedCycle
+		// Always pass the held root — zero-organism bars must NOT fall back
+		// to deriveRoot's default C, or the pad audibly wobbles held-key →
+		// C → held-key across organism droughts.
+		const rootOverride = advancedCycle.accumulatedRoot
+		const activeSpecies = _cycleOrganism?.colorSignature ?? null
 
 		return {
 			organisms,
@@ -4097,126 +4373,82 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			forceMatrix: this.forceMatrix,
 			typeKeys,
 			canvasWidth: this.width,
-			beatsPerBar: this.musicBeatsPerBar,
+			rootOverride,
+			activeSpecies,
+			chordDegree: chordDegreeIndex,
 		}
 	}
 
 	private snapshotPulseParticles(
-		registryId: number,
+		speciesSignature: string,
 		typeId: number,
-		beatIndex: number,
+		subdivisionIndex: number,
 	): Uint32Array | null {
 		const frame = this.detectionState
 		const registry = this.organismRegistry
 		if (!frame || !registry) return null
-
-		// Find the registered organism by registryId
-		const ro = registry.organisms.find((o) => o.registryId === registryId)
-		if (!ro) return null
 
 		const organelleById = new Map<number, OrganelleState>()
 		for (const org of frame.organelles) {
 			organelleById.set(org.id, org)
 		}
 
-		// Pick one organelle of the target typeId within this organism.
-		// Visual ordering: alternating left-right from organism velocity vector (§3.4).
-		const matching: { id: number; angularOffset: number }[] = []
-		const velAngle = Math.atan2(ro.velY, ro.velX)
-		for (const id of ro.organelleIds) {
-			const org = organelleById.get(id)
-			if (org && org.typeId === typeId) {
-				const orgAngle = Math.atan2(
-					org.centroidY - ro.centroidY,
-					org.centroidX - ro.centroidX,
-				)
-				matching.push({ id, angularOffset: orgAngle - velAngle })
+		// Find all organisms of this species
+		const speciesOrganisms = registry.organisms.filter(
+			(o) => o.colorSignature === speciesSignature,
+		)
+		if (speciesOrganisms.length === 0) return null
+
+		// Collect particle indices from one organelle per organism (round-robin)
+		const allIndices: Uint32Array[] = []
+		for (const ro of speciesOrganisms) {
+			// Pick one organelle of the target typeId within this organism.
+			// Visual ordering: alternating left-right from organism velocity vector.
+			const matching: { id: number; angularOffset: number }[] = []
+			const velAngle = Math.atan2(ro.velY, ro.velX)
+			for (const id of ro.organelleIds) {
+				const org = organelleById.get(id)
+				if (org && org.typeId === typeId) {
+					const orgAngle = Math.atan2(
+						org.centroidY - ro.centroidY,
+						org.centroidX - ro.centroidX,
+					)
+					matching.push({ id, angularOffset: orgAngle - velAngle })
+				}
 			}
-		}
-		if (matching.length === 0) return null
+			if (matching.length === 0) continue
 
-		// Sort by |angular offset| ascending, then interleave: right, left, right, left...
-		const right = matching
-			.filter((m) => m.angularOffset >= 0)
-			.sort((a, b) => a.angularOffset - b.angularOffset)
-		const left = matching
-			.filter((m) => m.angularOffset < 0)
-			.sort((a, b) => -a.angularOffset + b.angularOffset)
-		const visualOrder: number[] = []
-		const maxLen = Math.max(right.length, left.length)
-		for (let i = 0; i < maxLen; i++) {
-			if (i < right.length) visualOrder.push(right[i].id)
-			if (i < left.length) visualOrder.push(left[i].id)
-		}
-
-		const targetOrgId = visualOrder[beatIndex % visualOrder.length]
-		const org = organelleById.get(targetOrgId)
-		return org ? new Uint32Array(org.particleIndices) : null
-	}
-
-	/**
-	 * Trigger visual pulses for each hit in a scheduled bar (§3.2).
-	 * Converts AudioContext time → performance time for the pulse system.
-	 */
-	private triggerVisualPulses(
-		bar: ScheduledBar,
-		hitTimings: readonly {
-			readonly startTime: number
-			readonly endTime: number
-		}[],
-	): void {
-		if (hitTimings.length === 0) return
-
-		// Convert AudioContext time to performance.now() time
-		const audioNow = this.audioGraph.currentTime
-		const perfNow = performance.now() / 1000
-
-		for (let i = 0; i < bar.hits.length; i++) {
-			const hit = bar.hits[i]
-			const timing = hitTimings[i]
-			if (!timing) continue
-
-			const particles = this.snapshotPulseParticles(
-				hit.organismId,
-				hit.typeId,
-				hit.organelleIndex,
-			)
-			if (!particles) continue
-
-			// Use the quantized hit.time (from the scheduler grid) so visual
-			// pulses fire exactly on the beat, not the audio's adjusted startTime.
-			const perfStart = perfNow + (hit.time - audioNow)
-			const key = `${hit.organismId}:${hit.typeId}:${hit.organelleIndex}:${bar.barNumber}`
-
-			const manualShape = this.envelopeEditor?.getShape() ?? null
-
-			// Gate-aware timing: sustain fills the gate after attack+decay
-			let atkDur = hit.envelope.attackDuration
-			let decDur = hit.envelope.decayDuration
-			const gateDur = hit.gateDuration
-			if (gateDur < atkDur + decDur) {
-				const ratio = gateDur / (atkDur + decDur)
-				atkDur *= ratio
-				decDur *= ratio
+			// Sort by |angular offset| ascending, then interleave: right, left, right, left...
+			const right = matching
+				.filter((m) => m.angularOffset >= 0)
+				.sort((a, b) => a.angularOffset - b.angularOffset)
+			const left = matching
+				.filter((m) => m.angularOffset < 0)
+				.sort((a, b) => -a.angularOffset + b.angularOffset)
+			const visualOrder: number[] = []
+			const maxLen = Math.max(right.length, left.length)
+			for (let i = 0; i < maxLen; i++) {
+				if (i < right.length) visualOrder.push(right[i].id)
+				if (i < left.length) visualOrder.push(left[i].id)
 			}
-			const susDur = Math.max(0, gateDur - atkDur - decDur)
-			const relDur = hit.envelope.releaseDuration
-			const totalDur = atkDur + decDur + susDur + relDur
 
-			this.activePulses.set(key, {
-				startTime: perfStart,
-				duration: totalDur,
-				particleIndices: particles,
-				attackFrac: atkDur / totalDur,
-				decayFrac: decDur / totalDur,
-				sustainFrac: susDur / totalDur,
-				peakLevel: hit.envelope.peakLevel,
-				sustainLevel: hit.envelope.sustainLevel,
-				envelopeLut: manualShape
-					? buildGateAwareLUT(manualShape, atkDur, decDur, susDur, relDur, 128)
-					: null,
-			})
+			// Round-robin: wrap subdivisionIndex by this organism's local count
+			const targetOrgId = visualOrder[subdivisionIndex % visualOrder.length]
+			const org = organelleById.get(targetOrgId)
+			if (org) allIndices.push(new Uint32Array(org.particleIndices))
 		}
+
+		if (allIndices.length === 0) return null
+
+		// Concatenate all particle indices
+		const totalLen = allIndices.reduce((s, a) => s + a.length, 0)
+		const result = new Uint32Array(totalLen)
+		let offset = 0
+		for (const arr of allIndices) {
+			result.set(arr, offset)
+			offset += arr.length
+		}
+		return result
 	}
 
 	/**
@@ -5108,9 +5340,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			this.autoRandomizeCountsEnabled = autoCountsCheckbox.checked
 		})
 		autoCountsToggle.appendChild(autoCountsCheckbox)
-		const autoCountsClock = document.createElement("mini-clock") as MiniClock
-		autoCountsToggle.appendChild(autoCountsClock)
-		this._autoRandomizeCountsClock = autoCountsClock
 		typesSection.appendChild(autoCountsToggle)
 
 		// Add Particle button
@@ -5217,20 +5446,9 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		soundCheckbox.addEventListener("change", () => {
 			if (soundCheckbox.checked) {
 				this.audioGraph.enable()
-				this.tSoundStart = this.audioGraph.currentTime
-				this.musicBarNumber = -1
-				if (this.audioGraph.context && this.audioGraph.masterDestination) {
-					this.bassLayer.init(
-						this.audioGraph.context,
-						this.audioGraph.masterDestination,
-					)
-					this.bassLayer.setMaxQuartalVoices(Math.max(2, Math.floor(this.voiceBudget / 4)))
-					if (this.staccatoCurveEditor)
-						this.bassLayer.setStaccatoLUT(this.staccatoCurveEditor.getLUT())
-				}
+				this.resetBarGrid()
 			} else {
 				this.audioGraph.disable()
-				this.bassLayer.dispose()
 			}
 		})
 		soundToggleGroup.appendChild(soundCheckbox)
@@ -5248,12 +5466,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		})
 
 		// Wire the bar-visualizer inputs to settings
-		onBeatsChange((beats) => {
-			this.musicBeatsPerBar = beats
-			this.resetBarGrid()
-			const inp = document.querySelector<HTMLInputElement>('input[data-setting="musicBeatsPerBar"]')
-			if (inp) inp.value = String(beats)
-		})
 		onBpmChange((bpm) => {
 			this.musicBpm = bpm
 			this.resetBarGrid()
@@ -5261,6 +5473,18 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			if (inp) inp.value = String(bpm)
 			if (this._bpmGauge) this._bpmGauge.value = (bpm - 20) / 280
 		})
+		onCyclesChange((cycles) => {
+			this.cyclesBeforeRandomize = cycles
+			const inp = document.querySelector<HTMLInputElement>('input[data-setting="cyclesBeforeRandomize"]')
+			if (inp) inp.value = String(cycles)
+		})
+		setCycles(this.cyclesBeforeRandomize)
+		onBarsPerMelodyChange((bars) => {
+			this.barsPerMelody = bars
+			const inp = document.querySelector<HTMLInputElement>('input[data-setting="barsPerMelody"]')
+			if (inp) inp.value = String(bars)
+		})
+		setBarsPerMelody(this.barsPerMelody)
 		onNiceModeChange((nice) => {
 			this.preferNiceModes = nice
 			const cb = document.querySelector<HTMLInputElement>('input[data-setting="preferNiceModes"]')
@@ -5392,57 +5616,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			},
 		})
 		mix.body.appendChild(multiplierInput)
+
 		container.appendChild(mix.section)
-
-		// Master Filter (bus-wide LPF driven by curve editor)
-		const filterSection = this.makeSection("Master Filter", false)
-
-		const lpfQInput = createNumberGroup({
-			label: "Resonance (Q)",
-			value: 0.707,
-			setting: "lpfQ",
-			min: 0.1,
-			max: 20,
-			step: 0.1,
-			onInput: (v) => {
-				this.audioGraph.setLpfQ(Math.max(0.1, v))
-			},
-		})
-		filterSection.body.appendChild(lpfQInput)
-
-		const lpfCurveGroup = document.createElement("div")
-		lpfCurveGroup.className = "control-group control-group-column"
-		const lpfCurveLabel = document.createElement("label")
-		lpfCurveLabel.className = "control-label"
-		lpfCurveLabel.textContent = "Cutoff Curve"
-		lpfCurveGroup.appendChild(lpfCurveLabel)
-		const lpfCurveHint = document.createElement("div")
-		lpfCurveHint.className = "control-hint"
-		lpfCurveHint.textContent = "X: position in bar \u2022 Y: cutoff frequency"
-		lpfCurveGroup.appendChild(lpfCurveHint)
-		this.lpfCurveEditor = new CurveEditor(lpfCurveGroup)
-		const hiddenLpfCurveInput = document.createElement("input")
-		hiddenLpfCurveInput.type = "hidden"
-		hiddenLpfCurveInput.dataset.setting = "lpfCurve"
-		hiddenLpfCurveInput.value = this.lpfCurveEditor.toJSON()
-		this.lpfCurveEditor.onChange((lut) => {
-			this.audioGraph.setLpfLUT(lut)
-			hiddenLpfCurveInput.value = this.lpfCurveEditor!.toJSON()
-			hiddenLpfCurveInput.dispatchEvent(new Event("input", { bubbles: true }))
-		})
-		this.audioGraph.setLpfLUT(this.lpfCurveEditor.getLUT())
-		hiddenLpfCurveInput.addEventListener("input", () => {
-			if (
-				this.lpfCurveEditor &&
-				hiddenLpfCurveInput.value !== this.lpfCurveEditor.toJSON()
-			) {
-				this.lpfCurveEditor.fromJSON(hiddenLpfCurveInput.value)
-				this.audioGraph.setLpfLUT(this.lpfCurveEditor.getLUT())
-			}
-		})
-		lpfCurveGroup.appendChild(hiddenLpfCurveInput)
-		filterSection.body.appendChild(lpfCurveGroup)
-		container.appendChild(filterSection.section)
 
 		// Tempo & Meter
 		const tempoMeter = this.makeSection("Tempo & Meter", false)
@@ -5465,6 +5640,22 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		bpmGauge.value = (this.musicBpm - 20) / 280
 		this._bpmGauge = bpmGauge
 		tempoMeter.body.appendChild(bpmEl)
+
+		tempoMeter.body.appendChild(
+			createNumberGroup({
+				label: "Bars per Melody",
+				value: this.barsPerMelody,
+				setting: "barsPerMelody",
+				min: 1,
+				max: 16,
+				step: 1,
+				suffix: "bars",
+				onInput: (v) => {
+					this.barsPerMelody = v
+					setBarsPerMelody(v)
+				},
+			}),
+		)
 
 		const timeMultGroup = document.createElement("div")
 		timeMultGroup.className = "control-group"
@@ -5498,21 +5689,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 		tempoMeter.body.appendChild(
 			createNumberGroup({
-				label: "Beats Per Bar",
-				value: this.musicBeatsPerBar,
-				setting: "musicBeatsPerBar",
-				min: 2,
-				max: 8,
-				step: 1,
-				suffix: "beats",
-				onInput: (v) => {
-					this.musicBeatsPerBar = v
-					this.resetBarGrid()
-				},
-			}),
-		)
-		tempoMeter.body.appendChild(
-			createNumberGroup({
 				label: "Voice Budget",
 				value: this.voiceBudget,
 				setting: "voiceBudget",
@@ -5522,7 +5698,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				suffix: "voices",
 				onInput: (v) => {
 					this.voiceBudget = v
-					this.bassLayer.setMaxQuartalVoices(Math.max(2, Math.floor(v / 4)))
 				},
 			}),
 		)
@@ -5562,111 +5737,35 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		niceModeGroup.appendChild(niceModeCheckbox)
 		harmonicEngine.body.appendChild(niceModeGroup)
 
+		const rootStrategyGroup = document.createElement("div")
+		rootStrategyGroup.className = "control-group"
+		const rootStrategyLabel = document.createElement("label")
+		rootStrategyLabel.textContent = "Root Strategy"
+		rootStrategyGroup.appendChild(rootStrategyLabel)
+		const rootStrategyRadios = document.createElement("div")
+		rootStrategyRadios.className = "control-radios"
+		for (const [label, val] of [
+			["Table", "table"],
+			["Circle of Fifths", "circle-of-fifths"],
+		] as const) {
+			const radio = document.createElement("input")
+			radio.type = "radio"
+			radio.name = "rootStrategy"
+			radio.value = val
+			radio.checked = val === this.rootStrategy
+			radio.dataset.setting = "rootStrategy"
+			radio.addEventListener("change", () => {
+				this.rootStrategy = val
+			})
+			const radioLabel = document.createElement("label")
+			radioLabel.textContent = label
+			radioLabel.prepend(radio)
+			rootStrategyRadios.appendChild(radioLabel)
+		}
+		rootStrategyGroup.appendChild(rootStrategyRadios)
+		harmonicEngine.body.appendChild(rootStrategyGroup)
+
 		container.appendChild(harmonicEngine.section)
-
-		// Bass voicing (bass envelope + staccato + phrase)
-		const bassVoicing = this.makeSection("Bass Voicing", false)
-
-		const bassEnvelopeHint = document.createElement("div")
-		bassEnvelopeHint.className = "control-hint"
-		bassEnvelopeHint.textContent =
-			"Dbl-click: add/remove \u2022 Right-click: remove \u2022 Drag dividers"
-		bassVoicing.body.appendChild(bassEnvelopeHint)
-
-		this.bassEnvelopeEditor = new EnvelopeEditor(bassVoicing.body)
-		const hiddenBassEnvelopeInput = document.createElement("input")
-		hiddenBassEnvelopeInput.type = "hidden"
-		hiddenBassEnvelopeInput.dataset.setting = "bassEnvelopeShape"
-		hiddenBassEnvelopeInput.value = this.bassEnvelopeEditor.toJSON()
-		this.bassEnvelopeEditor.onChange((shape) => {
-			this.bassLayer.setBassEnvelope(shape)
-			hiddenBassEnvelopeInput.value = this.bassEnvelopeEditor!.toJSON()
-			hiddenBassEnvelopeInput.dispatchEvent(
-				new Event("input", { bubbles: true }),
-			)
-		})
-		this.bassLayer.setBassEnvelope(this.bassEnvelopeEditor.getShape())
-		hiddenBassEnvelopeInput.addEventListener("input", () => {
-			if (
-				this.bassEnvelopeEditor &&
-				hiddenBassEnvelopeInput.value !== this.bassEnvelopeEditor.toJSON()
-			) {
-				this.bassEnvelopeEditor.fromJSON(hiddenBassEnvelopeInput.value)
-				this.bassLayer.setBassEnvelope(this.bassEnvelopeEditor.getShape())
-			}
-		})
-		bassVoicing.body.appendChild(hiddenBassEnvelopeInput)
-
-		const staccatoGroup = document.createElement("div")
-		staccatoGroup.className = "control-group control-group-column"
-		const staccatoLabel = document.createElement("label")
-		staccatoLabel.className = "control-label"
-		staccatoLabel.textContent = "Staccato Curve"
-		staccatoGroup.appendChild(staccatoLabel)
-		const staccatoHint = document.createElement("div")
-		staccatoHint.className = "control-hint"
-		staccatoHint.textContent = "X: particle velocity \u2022 Y: staccato amount"
-		staccatoGroup.appendChild(staccatoHint)
-		this.staccatoCurveEditor = new CurveEditor(staccatoGroup)
-		const hiddenStaccatoInput = document.createElement("input")
-		hiddenStaccatoInput.type = "hidden"
-		hiddenStaccatoInput.dataset.setting = "staccatoCurve"
-		hiddenStaccatoInput.value = this.staccatoCurveEditor.toJSON()
-		this.staccatoCurveEditor.onChange((lut) => {
-			this.bassLayer.setStaccatoLUT(lut)
-			hiddenStaccatoInput.value = this.staccatoCurveEditor!.toJSON()
-			hiddenStaccatoInput.dispatchEvent(new Event("input", { bubbles: true }))
-		})
-		hiddenStaccatoInput.addEventListener("input", () => {
-			if (
-				this.staccatoCurveEditor &&
-				hiddenStaccatoInput.value !== this.staccatoCurveEditor.toJSON()
-			) {
-				this.staccatoCurveEditor.fromJSON(hiddenStaccatoInput.value)
-				this.bassLayer.setStaccatoLUT(this.staccatoCurveEditor.getLUT())
-			}
-		})
-		staccatoGroup.appendChild(hiddenStaccatoInput)
-		bassVoicing.body.appendChild(staccatoGroup)
-
-		// Phrase persistence
-		const hiddenPhraseInput = document.createElement("input")
-		hiddenPhraseInput.type = "hidden"
-		hiddenPhraseInput.dataset.setting = "phrasePattern"
-		hiddenPhraseInput.value = this.phrasePattern.join(",")
-		hiddenPhraseInput.addEventListener("input", () => {
-			const parts = hiddenPhraseInput.value.split(",") as BassDensity[]
-			if (
-				parts.length === 12 &&
-				parts.every((p) => ["W", "H", "Q", "E", "X"].includes(p))
-			) {
-				this.phrasePattern = parts
-				setPhraseStripCells(this.phrasePattern, this.phraseMirror)
-			}
-		})
-		bassVoicing.body.appendChild(hiddenPhraseInput)
-
-		const hiddenMirrorInput = document.createElement("input")
-		hiddenMirrorInput.type = "hidden"
-		hiddenMirrorInput.dataset.setting = "phraseMirror"
-		hiddenMirrorInput.value = String(this.phraseMirror)
-		hiddenMirrorInput.addEventListener("input", () => {
-			this.phraseMirror = hiddenMirrorInput.value === "true"
-			setPhraseStripCells(this.phrasePattern, this.phraseMirror)
-		})
-		bassVoicing.body.appendChild(hiddenMirrorInput)
-
-		setPhraseStripCells(this.phrasePattern, this.phraseMirror)
-		onPhraseChange((cells, mirror) => {
-			this.phrasePattern = [...cells]
-			this.phraseMirror = mirror
-			hiddenPhraseInput.value = cells.join(",")
-			hiddenPhraseInput.dispatchEvent(new Event("input", { bubbles: true }))
-			hiddenMirrorInput.value = String(mirror)
-			hiddenMirrorInput.dispatchEvent(new Event("input", { bubbles: true }))
-		})
-
-		container.appendChild(bassVoicing.section)
 
 		// Melody Envelope
 		const melodyEnvelope = this.makeSection("Melody Envelope", false)
@@ -5715,7 +5814,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				suffix: "px",
 				onInput: (v) => {
 					this.detectionConfig = { ...this.detectionConfig, proximityRadius: v }
-					this.detectionState = null
+					this.detectionState = null; this.prevFrameWire = null
 				},
 			}),
 		)
@@ -5733,7 +5832,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 						...this.detectionConfig,
 						coherenceThreshold: v,
 					}
-					this.detectionState = null
+					this.detectionState = null; this.prevFrameWire = null
 				},
 			}),
 		)
@@ -5751,7 +5850,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 						...this.detectionConfig,
 						minOrganelleSize: v,
 					}
-					this.detectionState = null
+					this.detectionState = null; this.prevFrameWire = null
 				},
 			}),
 		)
@@ -5769,7 +5868,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 					...this.detectionConfig,
 					organelleLatchBeats: v,
 				}
-				this.detectionState = null
+				this.detectionState = null; this.prevFrameWire = null
 			},
 		})
 		latchBeatsEl.appendChild(latchClock)
@@ -5795,7 +5894,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 						...this.detectionConfig,
 						organismProximityRadius: v,
 					}
-					this.detectionState = null
+					this.detectionState = null; this.prevFrameWire = null
 				},
 			}),
 		)
@@ -5813,7 +5912,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 						...this.detectionConfig,
 						organismCoherenceThreshold: v,
 					}
-					this.detectionState = null
+					this.detectionState = null; this.prevFrameWire = null
 				},
 			}),
 		)
@@ -6647,10 +6746,63 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			this.autoRandomizeMatrixEnabled = autoCheckbox.checked
 		})
 		autoToggle.appendChild(autoCheckbox)
-		const autoRandomizeClock = document.createElement("mini-clock") as MiniClock
-		autoToggle.appendChild(autoRandomizeClock)
-		this._autoRandomizeMatrixClock = autoRandomizeClock
 		wrapper.appendChild(autoToggle)
+
+		const cyclesGroup = document.createElement("div")
+		cyclesGroup.className = "control-group"
+		const cyclesLabel = document.createElement("label")
+		cyclesLabel.textContent = "Cycles Before Randomize"
+		cyclesGroup.appendChild(cyclesLabel)
+		const cyclesInput = document.createElement("input")
+		cyclesInput.type = "number"
+		cyclesInput.min = "1"
+		cyclesInput.max = "20"
+		cyclesInput.step = "1"
+		cyclesInput.value = String(this.cyclesBeforeRandomize)
+		cyclesInput.dataset.setting = "cyclesBeforeRandomize"
+		const syncCycles = () => {
+			this.cyclesBeforeRandomize = Math.max(1, Math.min(20, Number(cyclesInput.value) || 3))
+			cyclesInput.value = String(this.cyclesBeforeRandomize)
+			setCycles(this.cyclesBeforeRandomize)
+		}
+		cyclesInput.addEventListener("change", syncCycles)
+		cyclesInput.addEventListener("input", syncCycles)
+		cyclesGroup.appendChild(cyclesInput)
+		wrapper.appendChild(cyclesGroup)
+
+		const fallbackToggle = document.createElement("div")
+		fallbackToggle.className = "control-group"
+		const fallbackLabel = document.createElement("label")
+		fallbackLabel.textContent = "Fallback Timer"
+		fallbackToggle.appendChild(fallbackLabel)
+		const fallbackCheckbox = document.createElement("input")
+		fallbackCheckbox.type = "checkbox"
+		fallbackCheckbox.checked = this.fallbackEnabled
+		fallbackCheckbox.dataset.setting = "fallbackEnabled"
+		fallbackCheckbox.addEventListener("change", () => {
+			this.fallbackEnabled = fallbackCheckbox.checked
+		})
+		fallbackToggle.appendChild(fallbackCheckbox)
+		wrapper.appendChild(fallbackToggle)
+
+		const fallbackBarsGroup = document.createElement("div")
+		fallbackBarsGroup.className = "control-group"
+		const fallbackBarsLabel = document.createElement("label")
+		fallbackBarsLabel.textContent = "Fallback Bars"
+		fallbackBarsGroup.appendChild(fallbackBarsLabel)
+		const fallbackBarsInput = document.createElement("input")
+		fallbackBarsInput.type = "number"
+		fallbackBarsInput.min = "2"
+		fallbackBarsInput.max = "32"
+		fallbackBarsInput.step = "1"
+		fallbackBarsInput.value = String(this.fallbackBars)
+		fallbackBarsInput.dataset.setting = "fallbackBars"
+		fallbackBarsInput.addEventListener("change", () => {
+			this.fallbackBars = Math.max(2, Math.min(32, Number(fallbackBarsInput.value) || 8))
+			fallbackBarsInput.value = String(this.fallbackBars)
+		})
+		fallbackBarsGroup.appendChild(fallbackBarsInput)
+		wrapper.appendChild(fallbackBarsGroup)
 
 		const grid = document.createElement("div")
 		grid.className = "force-matrix-grid"
@@ -6822,17 +6974,52 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		const allRemoveIndices: number[] = []
 		const pendingAdds: Array<{ type: string; count: number }> = []
 
-		for (const type of types) {
-			const desired =
-				Math.random() < 0.1 ? 0 : Math.round(400 + Math.random() * 1100)
+		// Phase 1: decide which types are active (10% chance each is zeroed)
+		const activeFlags = types.map(() => Math.random() >= 0.1)
+		if (!activeFlags.some(Boolean)) {
+			activeFlags[Math.floor(Math.random() * activeFlags.length)] = true
+		}
+		const activeCount = activeFlags.filter(Boolean).length
+
+		// Phase 2: density-based total from screen area and scale
+		const screenArea = this.width * this.height
+		const rawTotal = Math.round(DENSITY_TARGET * screenArea / this.scale)
+		const minTotal = activeCount * MIN_PER_ACTIVE_TYPE
+		const finalTotal = Math.min(Math.max(rawTotal, minTotal), MAX_PARTICLES)
+
+		// Phase 3: distribute across types via random weights
+		const weights = types.map((_, i) => activeFlags[i] ? Math.random() : 0)
+		const weightSum = weights.reduce((a, b) => a + b, 0)
+		const remainder = finalTotal - minTotal
+		const desired = types.map((_, i) => {
+			if (!activeFlags[i]) return 0
+			if (remainder <= 0) return MIN_PER_ACTIVE_TYPE
+			return MIN_PER_ACTIVE_TYPE + Math.round((weights[i] / weightSum) * remainder)
+		})
+
+		// Phase 4: single-pass rounding correction
+		let sum = desired.reduce((a, b) => a + b, 0)
+		let diff = finalTotal - sum
+		const activeIndices = types.map((_, i) => i).filter((i) => activeFlags[i])
+		let idx = 0
+		while (diff !== 0 && idx < activeIndices.length * 2) {
+			const i = activeIndices[idx % activeIndices.length]
+			if (diff > 0) { desired[i]++; diff-- }
+			else if (desired[i] > MIN_PER_ACTIVE_TYPE) { desired[i]--; diff++ }
+			idx++
+		}
+
+		// Apply desired counts
+		for (let t = 0; t < types.length; t++) {
+			const type = types[t]
 			const currentCount = this.particles.filter(
 				(p) => p.groupId === type,
 			).length
 
-			if (desired > currentCount) {
-				pendingAdds.push({ type, count: desired - currentCount })
-			} else if (desired < currentCount) {
-				let toRemove = currentCount - desired
+			if (desired[t] > currentCount) {
+				pendingAdds.push({ type, count: desired[t] - currentCount })
+			} else if (desired[t] < currentCount) {
+				let toRemove = currentCount - desired[t]
 				for (let i = this.particles.length - 1; i >= 0 && toRemove > 0; i--) {
 					if (this.particles[i].groupId === type) {
 						allRemoveIndices.push(i)
@@ -6882,14 +7069,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	/** Returns the current phrase cycle position (0-based bar index), or -1 if unavailable. */
-	private phrasePosition(barNumber: number): { idx: number; len: number } {
-		const origin = this.bassLayer.cycleOrigin
-		const phrase = expandPhrase(this.phrasePattern, this.phraseMirror)
-		const len = phrase.length
-		if (len === 0 || origin == null) return { idx: -1, len: 0 }
-		return { idx: (((barNumber - origin) % len) + len) % len, len }
-	}
 
 	private getTypeColor(type: string): [number, number, number] {
 		const gc = this.groupColors.get(type)
@@ -6944,12 +7123,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this._matrixContainer = null
 		this._matrixRootContainer = null
 		this._particlesContainer = null
-		this._autoRandomizeMatrixClock = null
-		this._autoRandomizeCountsClock = null
 
+		this.detectionWorker?.terminate()
+		this.detectionWorker = null
+		this.detectionWorkerBusy = false
+		this.prevFrameWire = null
 		this.scheduleWorker?.terminate()
 		this.scheduleWorker = null
-		this.bassLayer.dispose()
 		this.audioGraph.dispose()
 		this.readbackBuffer?.destroy()
 		this.readbackBuffer = null

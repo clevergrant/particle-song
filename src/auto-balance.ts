@@ -1,7 +1,7 @@
 import type { ForceMatrix } from "./particles"
 import { clamp } from "./math-utils"
 
-export interface AutoBalanceInputs {
+interface AutoBalanceInputs {
 	readonly forceMatrix: ForceMatrix
 	readonly typeKeys: ReadonlyArray<string>
 	readonly typeCounts: Readonly<Record<string, number>>
@@ -10,7 +10,7 @@ export interface AutoBalanceInputs {
 	readonly worldHeight: number
 }
 
-export interface AutoBalanceResult {
+interface AutoBalanceResult {
 	readonly affectRadius: number
 	readonly forceRepelDistance: number
 	readonly baseStrength: number

@@ -5,7 +5,7 @@
 const WIDTH = 60;
 const HEIGHT = 16;
 
-export class InlineWaveform extends HTMLElement {
+class InlineWaveform extends HTMLElement {
   private _path: SVGPathElement;
   private _points: Array<{ x: number; y: number }> = [];
 

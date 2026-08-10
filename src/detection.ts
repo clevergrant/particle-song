@@ -376,36 +376,6 @@ function attachToNearest(
   return insertAt(tree);
 }
 
-/**
- * Depth-first traversal of the organelle tree with type-diversity heuristic.
- * When choosing which child to visit next, prefer children with a different
- * typeId than the previously visited node.
- */
-export function traverseOrganelleTree(
-  root: OrganelleTreeNode,
-): ReadonlyArray<{ readonly organelleId: number; readonly typeId: number }> {
-  const result: { organelleId: number; typeId: number }[] = [];
-
-  function visit(node: OrganelleTreeNode, prevTypeId: number) {
-    result.push({ organelleId: node.organelleId, typeId: node.typeId });
-
-    if (node.children.length === 0) return;
-
-    // Sort children: different typeId from current node first, then same
-    const sorted = [...node.children].sort((a, b) => {
-      const aMatch = a.typeId === node.typeId ? 1 : 0;
-      const bMatch = b.typeId === node.typeId ? 1 : 0;
-      return aMatch - bMatch;
-    });
-
-    for (const child of sorted) {
-      visit(child, node.typeId);
-    }
-  }
-
-  visit(root, -1);
-  return result;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Level 2: Organelles → Organisms                                    */
@@ -537,8 +507,8 @@ function detectOrganisms(
     let tree: OrganelleTreeNode;
 
     if (prevTree) {
-      const prevNodeIds = collectTreeIds(prevTree);
-      const newIds = organelleIds.filter(id => !new Set(prevNodeIds).has(id));
+      const prevNodeIdSet = new Set(collectTreeIds(prevTree));
+      const newIds = organelleIds.filter(id => !prevNodeIdSet.has(id));
       const updated = updateOrganelleTree(prevTree, currentIdSet, newIds, organelleMap, width, height);
       tree = updated ?? buildOrganelleTree(organelleIds, organelleMap, width, height);
     } else {
@@ -814,13 +784,32 @@ function detectOrganelles(
 /*  Organism Registry (stable identity across frames)                  */
 /* ------------------------------------------------------------------ */
 
+/** Number of types by which two signatures differ (symmetric difference). */
+function signatureTypeDiff(a: ReadonlySet<number>, b: ReadonlySet<number>): number {
+  let intersection = 0;
+  const smaller = a.size <= b.size ? a : b;
+  const larger = a.size <= b.size ? b : a;
+  for (const t of smaller) {
+    if (larger.has(t)) intersection++;
+  }
+  return a.size + b.size - 2 * intersection;
+}
+
 /**
  * Match current-frame organisms to previous registered organisms by
- * centroid proximity (within same colorSignature). Extrapolates previous
- * centroids forward by dt for more accurate matching.
+ * centroid proximity. Extrapolates previous centroids forward by dt for
+ * more accurate matching.
  *
- * Greedy nearest-neighbor: for each signature, sort candidate pairs by
- * distance and assign 1:1, closest first.
+ * Two-tier greedy nearest-neighbor: exact-signature pairs match first,
+ * then near-signature pairs (type sets differing by at most one type).
+ * The near tier preserves identity — and crucially `creationTime` — when
+ * an organism's signature flickers for a frame because one type's
+ * organelles briefly drop out. Without it, every flicker resets the
+ * organism's age and disqualifies it from the music scheduler.
+ *
+ * Distances are toroidal (like every other stage in this file) so an
+ * organism drifting across the wrap seam keeps its identity. Pass the
+ * world dimensions; 0 disables wrapping on that axis.
  */
 export function updateRegistry(
   prev: OrganismRegistry | null,
@@ -829,89 +818,88 @@ export function updateRegistry(
   dt: number,
   matchRadius: number = 80,
   currentTime: number = 0,
+  worldWidth: number = 0,
+  worldHeight: number = 0,
 ): OrganismRegistry {
   const matchRadiusSq = matchRadius * matchRadius;
   let nextId = prev?.nextId ?? 0;
 
-  const prevBySig = new Map<string, RegisteredOrganism[]>();
-  if (prev) {
-    for (const ro of prev.organisms) {
-      let arr = prevBySig.get(ro.colorSignature);
-      if (!arr) { arr = []; prevBySig.set(ro.colorSignature, arr); }
-      arr.push(ro);
+  const prevOrgs = prev?.organisms ?? [];
+  const currOrgs = frame.organisms;
+
+  const parseSig = (sig: string): ReadonlySet<number> =>
+    new Set(sig.split("+").map(Number));
+  const prevSigSets = prevOrgs.map(ro => parseSig(ro.colorSignature));
+  const currSigSets = currOrgs.map(osm => parseSig(osm.colorSignature));
+
+  const deltaX = (a: number, b: number): number =>
+    worldWidth > 0 ? toroidalDelta(a, b, worldWidth) : b - a;
+  const deltaY = (a: number, b: number): number =>
+    worldHeight > 0 ? toroidalDelta(a, b, worldHeight) : b - a;
+
+  // Candidate pairs: tier 0 = same signature, tier 1 = one type differs
+  const pairs: { pi: number; ci: number; distSq: number; tier: number }[] = [];
+  for (let pi = 0; pi < prevOrgs.length; pi++) {
+    const p = prevOrgs[pi];
+    // Extrapolate, wrapped back into the world so the delta stays toroidal
+    let px = p.centroidX + p.velX * dt;
+    let py = p.centroidY + p.velY * dt;
+    if (worldWidth > 0) px = ((px % worldWidth) + worldWidth) % worldWidth;
+    if (worldHeight > 0) py = ((py % worldHeight) + worldHeight) % worldHeight;
+    for (let ci = 0; ci < currOrgs.length; ci++) {
+      const c = currOrgs[ci];
+      const dx = deltaX(px, c.centroidX);
+      const dy = deltaY(py, c.centroidY);
+      const distSq = dx * dx + dy * dy;
+      if (distSq > matchRadiusSq) continue;
+
+      if (p.colorSignature === c.colorSignature) {
+        pairs.push({ pi, ci, distSq, tier: 0 });
+      } else if (signatureTypeDiff(prevSigSets[pi], currSigSets[ci]) <= 1) {
+        pairs.push({ pi, ci, distSq, tier: 1 });
+      }
     }
   }
 
-  const currBySig = new Map<string, OrganismState[]>();
-  for (const osm of frame.organisms) {
-    let arr = currBySig.get(osm.colorSignature);
-    if (!arr) { arr = []; currBySig.set(osm.colorSignature, arr); }
-    arr.push(osm);
+  // Exact-signature matches take priority; distance breaks ties within a tier
+  pairs.sort((a, b) => a.tier - b.tier || a.distSq - b.distSq);
+  const usedPrev = new Set<number>();
+  const usedCurr = new Set<number>();
+  const matched = new Map<number, number>(); // ci → pi
+
+  for (const pair of pairs) {
+    if (usedPrev.has(pair.pi) || usedCurr.has(pair.ci)) continue;
+    usedPrev.add(pair.pi);
+    usedCurr.add(pair.ci);
+    matched.set(pair.ci, pair.pi);
   }
 
   const result: RegisteredOrganism[] = [];
 
-  const allSigs = new Set([...prevBySig.keys(), ...currBySig.keys()]);
-  for (const sig of allSigs) {
-    const prevOrgs = prevBySig.get(sig) ?? [];
-    const currOrgs = currBySig.get(sig) ?? [];
+  for (let ci = 0; ci < currOrgs.length; ci++) {
+    const osm = currOrgs[ci];
+    const matchedPrev = matched.has(ci) ? prevOrgs[matched.get(ci)!] : undefined;
+    const registryId = matchedPrev?.registryId ?? nextId++;
 
-    const pairs: { pi: number; ci: number; distSq: number }[] = [];
-    for (let pi = 0; pi < prevOrgs.length; pi++) {
-      const p = prevOrgs[pi];
-      const px = p.centroidX + p.velX * dt;
-      const py = p.centroidY + p.velY * dt;
-      for (let ci = 0; ci < currOrgs.length; ci++) {
-        const c = currOrgs[ci];
-        const dx = px - c.centroidX;
-        const dy = py - c.centroidY;
-        const distSq = dx * dx + dy * dy;
-        if (distSq <= matchRadiusSq) {
-          pairs.push({ pi, ci, distSq });
-        }
-      }
+    let vx = 0, vy = 0, n = 0;
+    for (const orgId of osm.organelleIds) {
+      const org = organelleMap.get(orgId);
+      if (org) { vx += org.avgVelX; vy += org.avgVelY; n++; }
     }
+    if (n > 0) { vx /= n; vy /= n; }
 
-    pairs.sort((a, b) => a.distSq - b.distSq);
-    const usedPrev = new Set<number>();
-    const usedCurr = new Set<number>();
-    const matched = new Map<number, number>();
-
-    for (const pair of pairs) {
-      if (usedPrev.has(pair.pi) || usedCurr.has(pair.ci)) continue;
-      usedPrev.add(pair.pi);
-      usedCurr.add(pair.ci);
-      matched.set(pair.ci, prevOrgs[pair.pi].registryId);
-    }
-
-    for (let ci = 0; ci < currOrgs.length; ci++) {
-      const osm = currOrgs[ci];
-      const prevId = matched.get(ci);
-      const matchedPrev = prevId !== undefined
-        ? prevOrgs.find(p => p.registryId === prevId)
-        : undefined;
-      const registryId = prevId ?? nextId++;
-
-      let vx = 0, vy = 0, n = 0;
-      for (const orgId of osm.organelleIds) {
-        const org = organelleMap.get(orgId);
-        if (org) { vx += org.avgVelX; vy += org.avgVelY; n++; }
-      }
-      if (n > 0) { vx /= n; vy /= n; }
-
-      result.push({
-        registryId,
-        colorSignature: osm.colorSignature,
-        centroidX: osm.centroidX,
-        centroidY: osm.centroidY,
-        velX: vx,
-        velY: vy,
-        organelleIds: osm.organelleIds,
-        tree: osm.tree,
-        creationTime: matchedPrev?.creationTime ?? currentTime,
-        crossTypeLinks: osm.crossTypeLinks,
-      });
-    }
+    result.push({
+      registryId,
+      colorSignature: osm.colorSignature,
+      centroidX: osm.centroidX,
+      centroidY: osm.centroidY,
+      velX: vx,
+      velY: vy,
+      organelleIds: osm.organelleIds,
+      tree: osm.tree,
+      creationTime: matchedPrev?.creationTime ?? currentTime,
+      crossTypeLinks: osm.crossTypeLinks,
+    });
   }
 
   return { organisms: result, nextId };

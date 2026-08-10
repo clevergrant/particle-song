@@ -1,19 +1,20 @@
 /**
- * Web Worker for scheduleBar + applyVoiceBudget.
+ * Web Worker for bar scheduling.
  *
- * Runs the heavy music scheduling computation off the main thread
- * so the animation loop stays smooth at bar boundaries.
+ * Streams results: bar-meta first, then per-organism slot-fills, then done.
+ * This allows the main thread to start playing notes as soon as they arrive
+ * rather than waiting for the entire bar computation to finish.
  */
 
-import { scheduleBar, type ScheduleConfig } from "./hit-scheduler";
-import { applyVoiceBudget } from "./voice-budget";
+import { computeBarContext, computeSpeciesSlots, type ScheduleConfig } from "./hit-scheduler";
+import type { ScheduleWorkerSlotFill } from "./types";
 import {
   deserializeBarSnapshot,
   deserializeMusicState,
-  serializeScheduledBar,
+  serializeBarMeta,
   type BarSnapshotWire,
   type MusicStateWire,
-  type ScheduledBarWire,
+  type ScheduleWorkerMsgWire,
 } from "./worker-serialization";
 
 /* ── Message types ───────────────────────────────────────────────────── */
@@ -26,41 +27,56 @@ export interface ScheduleWorkerRequest {
   readonly barDur: number;
   readonly prevState: MusicStateWire | null;
   readonly config: ScheduleConfig;
-  readonly voiceBudget: number;
-}
-
-export interface ScheduleWorkerResponse {
-  readonly id: number;
-  /** Raw output — used for musicState/bass updates. */
-  readonly scheduled: ScheduledBarWire;
-  /** After voice-budget culling — used for playback. */
-  readonly culled: ScheduledBarWire;
 }
 
 /* ── Handler ─────────────────────────────────────────────────────────── */
 
+function post(msg: ScheduleWorkerMsgWire): void {
+  (self as unknown as Worker).postMessage(msg);
+}
+
 self.onmessage = (e: MessageEvent<ScheduleWorkerRequest>) => {
   const req = e.data;
 
-  const snapshot = deserializeBarSnapshot(req.snapshot);
-  const prevState = deserializeMusicState(req.prevState);
+  // The whole computation is guarded so `done` ALWAYS reaches the main
+  // thread — pendingBarRequest is only cleared by `done`, so a bare throw
+  // here would permanently stall all future bar scheduling.
+  try {
+    const snapshot = deserializeBarSnapshot(req.snapshot);
+    const prevState = deserializeMusicState(req.prevState);
 
-  const scheduled = scheduleBar(
-    snapshot,
-    req.barNumber,
-    req.barStartTime,
-    req.barDur,
-    prevState,
-    req.config,
-  );
+    // 1. Compute bar context (fast — mode, root, bass, ranges)
+    const ctx = computeBarContext(
+      snapshot,
+      req.barStartTime,
+      req.barDur,
+      prevState,
+      req.config,
+    );
 
-  const culled = applyVoiceBudget(scheduled, req.voiceBudget);
+    // 2. Stream bar-meta immediately
+    post(serializeBarMeta(ctx, req.id, req.barNumber));
 
-  const response: ScheduleWorkerResponse = {
-    id: req.id,
-    scheduled: serializeScheduledBar(scheduled),
-    culled: serializeScheduledBar(culled),
-  };
-
-  (self as unknown as Worker).postMessage(response);
+    // 3. Stream per-species slot fills (one voice per type per species)
+    const speciesResults = computeSpeciesSlots(
+      snapshot, ctx, req.barStartTime, req.barDur, req.config, req.barNumber,
+    );
+    for (const result of speciesResults) {
+      for (const { slotIndex, note } of result.slots) {
+        const fill: ScheduleWorkerSlotFill = {
+          kind: "slot-fill",
+          id: req.id,
+          tierIndex: result.tierIndex,
+          slotIndex,
+          notes: [note],
+        };
+        post(fill);
+      }
+    }
+  } catch (err) {
+    console.error("schedule-worker: bar computation failed", err);
+  } finally {
+    // 4. Signal completion
+    post({ kind: "done" as const, id: req.id });
+  }
 };

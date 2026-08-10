@@ -1,38 +1,34 @@
 /**
  * Bar-boundary hit scheduler (§3.2, §3.3).
  *
- * Pure function: given a BarSnapshot + timing info + music state,
- * produce a ScheduledBar containing every hit for the upcoming bar.
- * The audio graph then plays these fire-and-forget.
+ * Pure functions: given a BarSnapshot + timing info + music state,
+ * produce bar-level context and per-organism slot assignments for
+ * the tuplet grid. Playback parameters are computed at play time
+ * from live simulation state (see play-time-params.ts).
  */
 
-import type {
-  BarSnapshot,
-  ScheduledBar,
-  ScheduledHit,
-  SnapshotOrganelle,
-  MusicState,
-  BassUpdate,
-  ArpNote,
-  NoteDuration,
-  EnvelopeParams,
-  EnvelopeRanges,
-  TransitionChord,
+import {
+  MAX_SUBDIVISION,
+  type BarSnapshot,
+  type SlotNote,
+  type MusicState,
+  type ModeDefinition,
+  type EnvelopeRanges,
+  type TransitionChord,
+  type SpeciesCycle,
 } from "./types";
 
 import { computeNetStability } from "./stability";
 import { selectMode } from "./scale-selector";
+import { diatonicTriad } from "./modes";
 import { computeTypeRoots, deriveRoot, findOldestSpecies } from "./root-derivation";
 import { computeTransitionBuffer, pitchClassSet } from "./transition-buffer";
-import { collapseToPhase, computeRegisterWidth, clampToRegister, crossTypeLinksToPhase } from "./overtone-phases";
-import { computeAllSociabilities, sociabilityToWaveform } from "./timbre";
-import { subdivisionTimes } from "./timing";
+import { collapseToPhase, crossTypeLinksToPhase } from "./overtone-phases";
+import { computeAllSociabilities } from "./timbre";
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
-
-const MAX_SUBDIVISION = 16;
 
 /** EMA smoothing factor: 30% current bar, 70% history. */
 const EMA_ALPHA = 0.3;
@@ -60,249 +56,161 @@ function emaBlend(current: number, prev: number): number {
 /*  Expression mapping helpers                                         */
 /* ------------------------------------------------------------------ */
 
-/** Normalize particle count to [0,1] within the observed range. */
-function normalizeCount(particleCount: number, minCount: number, maxCount: number): number {
-  if (maxCount <= minCount) return 0.5;
-  return (particleCount - minCount) / (maxCount - minCount);
+/* ------------------------------------------------------------------ */
+/*  Per-type pitch range from particle count                           */
+/* ------------------------------------------------------------------ */
+
+/** MIDI boundaries for the 2-octave sliding window. */
+const PITCH_RANGE_LOW = 36;   // C2
+const PITCH_RANGE_HIGH = 84;  // C6
+const WINDOW_SIZE = 24;       // 2 octaves
+
+export interface TypePitchRange {
+  readonly lowMidi: number;
+  readonly highMidi: number;
 }
 
-/** Map organelle density to volume (0–1). Denser clusters sound louder/more cohesive. */
-function densityToVolume(density: number): number {
-  // density is typically 0–2+; clamp to [0,1] with a reasonable ceiling
-  return Math.min(Math.max(density / 2, 0.15), 1);
-}
+/**
+ * Compute a 2-octave pitch window per organelle type.
+ * More particles → lower range; fewer → higher.
+ *
+ * Uses rank-based quantization: types are sorted by average particle count
+ * and assigned to evenly-spaced bands across the full pitch range.
+ * This guarantees a good spread even when particle counts are similar.
+ */
+export function computeTypePitchRanges(
+  organisms: readonly import("./types").SnapshotOrganism[],
+): ReadonlyMap<number, TypePitchRange> {
+  const typeSums = new Map<number, { total: number; count: number }>();
 
-/** Map particle count to octave offset (larger = lower). */
-function countToOctaveOffset(particleCount: number, minCount: number, maxCount: number): number {
-  const normalized = normalizeCount(particleCount, minCount, maxCount);
-  // Range: +1 (small, high) to -1 (large, low)
-  return Math.round(1 - 2 * normalized);
-}
+  for (const org of organisms) {
+    for (const o of org.organelles) {
+      const entry = typeSums.get(o.typeId);
+      if (entry) {
+        entry.total += o.particleCount;
+        entry.count++;
+      } else {
+        typeSums.set(o.typeId, { total: o.particleCount, count: 1 });
+      }
+    }
+  }
 
-/** Map particle count to bandpass filter cutoff Hz. */
-function countToFilterCutoff(particleCount: number, minCount: number, maxCount: number): number {
-  const normalized = normalizeCount(particleCount, minCount, maxCount);
-  // Larger = lower cutoff (warm), smaller = higher (bright)
-  // Range: 200 Hz (large) to 8000 Hz (small)
-  return 8000 * Math.pow(200 / 8000, normalized);
-}
+  // Rank types by average particle count (descending — most particles = lowest pitch)
+  const ranked: { typeId: number; avg: number }[] = [];
+  for (const [typeId, { total, count }] of typeSums) {
+    ranked.push({ typeId, avg: total / count });
+  }
+  ranked.sort((a, b) => b.avg - a.avg); // most particles first → lowest band
 
-/** Normalize a value into 0–1 given min/max bounds. */
-function normalizeRange(value: number, min: number, max: number): number {
-  return max > min ? (value - min) / (max - min) : 0;
-}
-
-/** Pre-computed 0–1 normalized values for the envelope-driving properties. */
-interface EnvelopeNorms {
-  readonly countNorm: number;
-  readonly speedNorm: number;
-  readonly densityNorm: number;
-  readonly radiusNorm: number;
-  readonly ageNorm: number;
-}
-
-/** Compute rank-based normalization for a set of organelles.
- *  Each organelle's rank for each property is mapped to [0,1] so that
- *  the lowest always gets 0 (staccato) and highest gets 1 (sustained),
- *  regardless of how close the absolute values are.  When only one
- *  organelle exists, the EMA-based absolute normalization is used as
- *  the fallback so the physics still drives the envelope shape. */
-function computeOrganelleRanks(
-  organelles: readonly SnapshotOrganelle[],
-  ranges: EnvelopeRanges,
-): ReadonlyMap<number, EnvelopeNorms> {
-  const n = organelles.length;
-  const result = new Map<number, EnvelopeNorms>();
+  const result = new Map<number, TypePitchRange>();
+  const n = ranked.length;
   if (n === 0) return result;
 
-  // Single organelle — use absolute normalization against EMA ranges
-  if (n === 1) {
-    const o = organelles[0];
-    result.set(o.id, {
-      countNorm: normalizeRange(o.particleCount, ranges.particleCountMin, ranges.particleCountMax),
-      speedNorm: normalizeRange(o.centroidSpeed, ranges.speedMin, ranges.speedMax),
-      densityNorm: normalizeRange(o.density, ranges.densityMin, ranges.densityMax),
-      radiusNorm: normalizeRange(o.spatialRadius, ranges.radiusMin, ranges.radiusMax),
-      ageNorm: 0, // overridden per-organism at hit site
-    });
-    return result;
-  }
-
-  // Multiple organelles — rank-based normalization
-  const byCount = [...organelles].sort((a, b) => a.particleCount - b.particleCount);
-  const bySpeed = [...organelles].sort((a, b) => a.centroidSpeed - b.centroidSpeed);
-  const byDensity = [...organelles].sort((a, b) => a.density - b.density);
-  const byRadius = [...organelles].sort((a, b) => a.spatialRadius - b.spatialRadius);
-
-  const countRank = new Map<number, number>();
-  const speedRank = new Map<number, number>();
-  const densityRank = new Map<number, number>();
-  const radiusRank = new Map<number, number>();
+  // Slide range: how far the window center can move
+  const slideRange = PITCH_RANGE_HIGH - WINDOW_SIZE - PITCH_RANGE_LOW;
 
   for (let i = 0; i < n; i++) {
-    const r = i / (n - 1);
-    countRank.set(byCount[i].id, r);
-    speedRank.set(bySpeed[i].id, r);
-    densityRank.set(byDensity[i].id, r);
-    radiusRank.set(byRadius[i].id, r);
+    // Evenly space: rank 0 (most particles) → bottom, rank n-1 (fewest) → top
+    const t = n === 1 ? 0.5 : i / (n - 1);
+    const lowMidi = Math.round(PITCH_RANGE_LOW + t * slideRange);
+    result.set(ranked[i].typeId, { lowMidi, highMidi: lowMidi + WINDOW_SIZE });
   }
 
-  for (const o of organelles) {
-    result.set(o.id, {
-      countNorm: countRank.get(o.id)!,
-      speedNorm: speedRank.get(o.id)!,
-      densityNorm: densityRank.get(o.id)!,
-      radiusNorm: radiusRank.get(o.id)!,
-      ageNorm: 0, // overridden per-organism at hit site
-    });
-  }
   return result;
 }
 
-/** Compute ADSR envelope timing from pre-normalized 0–1 values (§5.4, §8.3).
- *  Sustain duration is no longer pre-computed — it comes from the gate length. */
-function computeEnvelope(norms: EnvelopeNorms): EnvelopeParams {
-  const { countNorm, speedNorm, densityNorm, radiusNorm, ageNorm } = norms;
+/* ------------------------------------------------------------------ */
+/*  Bar context (pre-organism computation)                             */
+/* ------------------------------------------------------------------ */
 
-  // Attack ← centroid speed × particle count, shortened for young organelles
-  // Young (ageNorm≈0) → very short attack; older organisms stretch slightly (1.2×)
-  const baseAttack = 0.02 + (1 - speedNorm) * 0.3 + countNorm * 0.2;
-  const attackDuration = Math.max(0.01, baseAttack * ageNorm * 1.2);
-
-  // Peak level ← speed × density, quieter for young organelles
-  const peakLevel = (0.4 + speedNorm * 0.35 + densityNorm * 0.25) * (0.3 + 0.7 * ageNorm);
-
-  // Decay ← density: dense = short, diffuse = long
-  const decayDuration = 0.1 + (1 - densityNorm) * 0.6;
-
-  // Sustain level ← particle count: big = high, small = low
-  const sustainLevel = 0.1 + countNorm * 0.7;
-
-  // Release ← spatial radius: large = long tail, small = quick cutoff
-  const releaseDuration = 0.1 + radiusNorm * 1.0;
-
-  // Curve shapes from speed (§8.3): fast → percussive (linear), slow → swelling (ease-in)
-  const attackCurve: EnvelopeParams["attackCurve"] = speedNorm > 0.6 ? "linear" : "ease-in";
-  const decayCurve: EnvelopeParams["decayCurve"] = densityNorm > 0.5 ? "exponential" : "ease-out";
-  const releaseCurve: EnvelopeParams["releaseCurve"] = "ease-out";
-
-  return { attackDuration, attackCurve, peakLevel, decayDuration, decayCurve, sustainLevel, releaseDuration, releaseCurve };
+/** All bar-level musical decisions made before the per-organism loop. */
+export interface BarContext {
+  readonly mode: ModeDefinition;
+  readonly rootMidi: number;
+  readonly rootSemitone: number;
+  readonly isBufferBar: boolean;
+  readonly bufferChord: TransitionChord | null;
+  readonly activePitchClasses: ReadonlySet<number>;
+  /** This bar's chord (diatonic triad on the cycle's degree, or buffer chord). */
+  readonly chordPitchClasses: ReadonlySet<number>;
+  readonly typeRoots: ReadonlyMap<string, number>;
+  readonly sociabilities: ReadonlyMap<string, number>;
+  readonly typePitchRanges: ReadonlyMap<number, TypePitchRange>;
+  readonly netStability: number;
+  readonly envelopeRanges: EnvelopeRanges;
+  readonly spatialEntropy: number;
+  readonly speciesCycle: SpeciesCycle;
+  readonly typeKeys: readonly string[];
+  readonly canvasWidth: number;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Note duration (gate model)                                         */
-/* ------------------------------------------------------------------ */
-
-const NOTE_DURATION_BEATS: Record<NoteDuration, number> = {
-  whole: 4,
-  half: 2,
-  quarter: 1,
-  eighth: 0.5,
-  sixteenth: 0.25,
-};
-
-/** Map organelle physics to a musical note duration.
- *  Primary driver: countNorm (large = long notes).
- *  Secondary: ageNorm (older organisms hold longer). */
-function computeNoteDuration(norms: EnvelopeNorms): NoteDuration {
-  const blend = 0.5 * norms.countNorm + 0.3 * norms.densityNorm + 0.2 * norms.ageNorm;
-  if (blend > 0.85) return "whole";
-  if (blend > 0.65) return "half";
-  if (blend > 0.40) return "quarter";
-  if (blend > 0.20) return "eighth";
-  return "sixteenth";
-}
-
-function noteDurationToSeconds(nd: NoteDuration, beatDur: number): number {
-  return NOTE_DURATION_BEATS[nd] * beatDur;
-}
-
-
-/* ------------------------------------------------------------------ */
-/*  Main scheduler                                                     */
-/* ------------------------------------------------------------------ */
 
 export interface ScheduleConfig {
   readonly barsPerPhase: number;         // overtone phase rate
   readonly qualificationFraction: number; // fraction of a bar for organism qualification
   readonly hysteresisMargin?: number;
   readonly preferNiceModes?: boolean;    // divide thresholds by 2 → nicer modes at lower stability
-  readonly beatsPerBar: number;          // for gate duration computation
 }
 
 /**
- * Schedule all hits for the upcoming bar.
- *
- * This is the core of the bar-boundary architecture (§3.1, §3.2):
- * 1. Snapshot is taken at bar boundary
- * 2. All musical decisions are made here
- * 3. Returns a ScheduledBar that the audio graph plays fire-and-forget
+ * Compute bar-level context: mode, root, bass, ranges — everything
+ * before the per-organism loop. Fast enough to post as `bar-meta`
+ * immediately from the worker.
  */
-export function scheduleBar(
+export function computeBarContext(
   snapshot: BarSnapshot,
-  barNumber: number,
   barStartTime: number,
   barDur: number,
   prevState: MusicState | null,
   config: ScheduleConfig,
-): ScheduledBar {
+): BarContext {
   const { organisms, globalMetrics, forceMatrix, typeKeys, canvasWidth } = snapshot;
 
-  // ── Stability → mode selection ────────────────────────────────────
   const netStability = computeNetStability(globalMetrics);
   const prevMode = prevState?.currentMode ?? null;
   const mode = selectMode(netStability, prevMode, config.hysteresisMargin, config.preferNiceModes);
 
-  // ── Root derivation ───────────────────────────────────────────────
   const typeRoots = computeTypeRoots(forceMatrix, typeKeys);
-  const oldestSpecies = findOldestSpecies(organisms);
-  const rootSemitone = deriveRoot(typeRoots, oldestSpecies, typeKeys);
-  const rootMidi = 60 + rootSemitone; // C4 + semitone offset
+  const rootSemitone = snapshot.rootOverride != null
+    ? snapshot.rootOverride
+    : deriveRoot(typeRoots, findOldestSpecies(organisms), typeKeys);
+  const rootMidi = 60 + rootSemitone;
 
-  // ── Transition buffer check ───────────────────────────────────────
   let isBufferBar = false;
   let bufferChord: TransitionChord | null = null;
-
   if (prevState) {
     bufferChord = computeTransitionBuffer(
-      prevState.currentMode,
-      prevState.currentRootMidi % 12,
-      mode,
-      rootSemitone,
-      prevState.bufferChord,
+      prevState.currentMode, prevState.currentRootMidi % 12,
+      mode, rootSemitone, prevState.bufferChord,
     );
     isBufferBar = bufferChord !== null;
   }
 
-  // ── Active pitch classes for this bar ─────────────────────────────
   const activePitchClasses = isBufferBar && bufferChord
     ? bufferChord.pitchClasses
     : pitchClassSet(mode, rootSemitone);
 
-  // ── Timbre (sociability → waveform) ───────────────────────────────
+  // Bar chord: buffer chord during transitions, else the diatonic triad
+  // on the organism cycle's chosen degree within the current key.
+  const chordPitchClasses = isBufferBar && bufferChord
+    ? bufferChord.pitchClasses
+    : diatonicTriad(mode, rootSemitone, snapshot.chordDegree);
+
   const sociabilities = computeAllSociabilities(forceMatrix, typeKeys);
+  // Pitch ranges scoped to the active species (one organism per bar)
+  const activeOrganisms = snapshot.activeSpecies != null
+    ? organisms.filter(o => o.colorSignature === snapshot.activeSpecies)
+    : organisms;
+  const typePitchRanges = computeTypePitchRanges(activeOrganisms);
 
-  // ── Register width ────────────────────────────────────────────────
-  const registerWidth = computeRegisterWidth(organisms.length);
-
-  // ── Global ranges + playable organelle collection ──────────────────
-  // Organelles arrive in BFS tree order from the snapshot.  Each organism's
-  // total organelle count (capped at MAX_SUBDIVISION) becomes its subdivision.
-  const allPlayable: SnapshotOrganelle[] = [];
-  let gPcMin = Infinity;
-  let gPcMax = -Infinity;
-  let gSpeedMin = Infinity;
-  let gSpeedMax = -Infinity;
-  let gDensityMin = Infinity;
-  let gDensityMax = -Infinity;
-  let gRadiusMin = Infinity;
-  let gRadiusMax = -Infinity;
+  // Global ranges across all playable organelles
+  let gPcMin = Infinity, gPcMax = -Infinity;
+  let gSpeedMin = Infinity, gSpeedMax = -Infinity;
+  let gDensityMin = Infinity, gDensityMax = -Infinity;
+  let gRadiusMin = Infinity, gRadiusMax = -Infinity;
   for (const org of organisms) {
     const playable = org.organelles.length <= MAX_SUBDIVISION
-      ? org.organelles
-      : org.organelles.slice(0, MAX_SUBDIVISION);
+      ? org.organelles : org.organelles.slice(0, MAX_SUBDIVISION);
     for (const o of playable) {
-      allPlayable.push(o);
       if (o.particleCount < gPcMin) gPcMin = o.particleCount;
       if (o.particleCount > gPcMax) gPcMax = o.particleCount;
       if (o.centroidSpeed < gSpeedMin) gSpeedMin = o.centroidSpeed;
@@ -318,10 +226,6 @@ export function scheduleBar(
   if (!isFinite(gDensityMin)) { gDensityMin = 0; gDensityMax = 1; }
   if (!isFinite(gRadiusMin)) { gRadiusMin = 0; gRadiusMax = 1; }
 
-  // ── EMA-blended envelope ranges ──────────────────────────────────
-  // Blend this bar's observed ranges with the running EMA so that
-  // normalization always produces a staccato↔sustained spread even
-  // when all current organelles have similar properties.
   const prevRanges = prevState?.envelopeRanges ?? null;
   const rawRanges: EnvelopeRanges = {
     particleCountMin: gPcMin, particleCountMax: gPcMax,
@@ -342,255 +246,248 @@ export function scheduleBar(
     }
     : rawRanges;
 
-  // Enforce minimum range widths to prevent degenerate normalization
-  const [ePcMin, ePcMax] = ensureMinWidth(blendedRanges.particleCountMin, blendedRanges.particleCountMax, MIN_RANGE_PC);
-  const [eSpMin, eSpMax] = ensureMinWidth(blendedRanges.speedMin, blendedRanges.speedMax, MIN_RANGE_SPEED);
-  const [eDnMin, eDnMax] = ensureMinWidth(blendedRanges.densityMin, blendedRanges.densityMax, MIN_RANGE_DENSITY);
-  const [eRdMin, eRdMax] = ensureMinWidth(blendedRanges.radiusMin, blendedRanges.radiusMax, MIN_RANGE_RADIUS);
-  const envelopeRanges: EnvelopeRanges = {
-    particleCountMin: ePcMin, particleCountMax: ePcMax,
-    speedMin: eSpMin, speedMax: eSpMax,
-    densityMin: eDnMin, densityMax: eDnMax,
-    radiusMin: eRdMin, radiusMax: eRdMax,
-  };
-
-  // ── Rank-based envelope normalization ──────────────────────────────
-  // Ranks guarantee a staccato↔sustained spread: the organelle with the
-  // lowest value always normalizes to 0, the highest to 1, regardless of
-  // how close the absolute values are.  Single-organelle bars fall back
-  // to EMA-based absolute normalization so physics still drives the shape.
-  const organelleNorms = computeOrganelleRanks(allPlayable, envelopeRanges);
-
-  // ── Schedule hits per organism ────────────────────────────────────
-  const hits: ScheduledHit[] = [];
-
-  // Occupancy tracking: maps quantized time offsets (relative to barStart)
-  // to hit counts, so we prefer empty positions before doubling up.
-  // Uses a tolerance of 0.001s (~1ms) to treat near-coincident times as same slot.
-  const occupiedTimes: number[] = [];  // sorted list of occupied offsets
-  const occupancyCounts = new Map<number, number>(); // offset → count
-
-  /** Snap a raw bar-relative offset to the nearest position on the voice's
-   *  own subdivision grid, preferring unoccupied positions. This preserves
-   *  tuplet feel (triplets, quintuplets, etc.) by not pulling hits onto
-   *  the 16th-note grid. */
-  function quantizeToGrid(rawOffset: number, subdivisionGrid: readonly number[]): number {
-    // Use only this voice's natural subdivision grid as candidates
-    const candidates = new Set<number>();
-    for (const p of subdivisionGrid) candidates.add(Math.round(p * 1000) / 1000);
-    // Sort by distance from rawOffset
-    const sorted = [...candidates].sort((a, b) =>
-      Math.abs(a - rawOffset) - Math.abs(b - rawOffset)
-    );
-    // Pick the nearest unoccupied position
-    for (const pos of sorted) {
-      if (!occupancyCounts.has(pos)) {
-        occupancyCounts.set(pos, 1);
-        occupiedTimes.push(pos);
-        return pos;
-      }
-    }
-    // All positions occupied — double up on nearest
-    const nearest = sorted[0];
-    occupancyCounts.set(nearest, (occupancyCounts.get(nearest) ?? 0) + 1);
-    return nearest;
-  }
-
-  // Pre-filter to qualified organisms so we know the total count for phase rotation.
-  const qualifiedOrganisms = organisms.filter(org => {
-    const ageInBars = (barStartTime - org.creationTime) / barDur;
-    return ageInBars >= config.qualificationFraction;
-  });
-  const numOrganisms = qualifiedOrganisms.length;
-
-  for (let orgIdx = 0; orgIdx < numOrganisms; orgIdx++) {
-    const organism = qualifiedOrganisms[orgIdx];
-    const ageInBars = (barStartTime - organism.creationTime) / barDur;
-
-    // Age norm: saturation curve — half-life at 8 bars, asymptotes to 1.
-    // Young organisms get short staccato sustains; old ones get legato holds.
-    const AGE_HALF_LIFE = 8;
-    const ageNorm = ageInBars / (ageInBars + AGE_HALF_LIFE);
-
-    // Pan from organism centroid X position (§6.1)
-    const pan = canvasWidth > 0
-      ? (organism.centroidX / canvasWidth) * 2 - 1
-      : 0;
-
-    // ── Organism-wide subdivision ──────────────────────────────────────
-    // Total organelle count (capped at MAX_SUBDIVISION) determines the
-    // rhythmic grid.  Organelles arrive in BFS tree order from the snapshot
-    // so the structural core of the organism plays the downbeat.
-    const playable = organism.organelles.length <= MAX_SUBDIVISION
-      ? organism.organelles
-      : organism.organelles.slice(0, MAX_SUBDIVISION);
-    const subdivision = playable.length;
-    if (subdivision === 0) continue;
-
-    // Per-organism particle count range for octave offset normalization.
-    let orgPcMin = Infinity;
-    let orgPcMax = -Infinity;
-    for (const o of playable) {
-      if (o.particleCount < orgPcMin) orgPcMin = o.particleCount;
-      if (o.particleCount > orgPcMax) orgPcMax = o.particleCount;
-    }
-    if (!isFinite(orgPcMin)) { orgPcMin = 0; orgPcMax = 1; }
-
-    // Blend per-organism and global ranges (50/50)
-    const LOCAL_WEIGHT = 0.5;
-    const bPcMin = LOCAL_WEIGHT * orgPcMin + (1 - LOCAL_WEIGHT) * gPcMin;
-    const bPcMax = LOCAL_WEIGHT * orgPcMax + (1 - LOCAL_WEIGHT) * gPcMax;
-
-    const rawTimes = subdivisionTimes(barStartTime, barDur, subdivision);
-    // Build the organism's subdivision grid (bar-relative offsets)
-    const subdivGrid: number[] = [];
-    for (let s = 0; s < subdivision; s++) subdivGrid.push((s / subdivision) * barDur);
-    const hitTimes = rawTimes.map(t =>
-      barStartTime + quantizeToGrid((t - barStartTime + barDur) % barDur, subdivGrid)
-    );
-
-    for (let i = 0; i < subdivision; i++) {
-      const organelle = playable[i];
-      const typeId = organelle.typeId;
-
-      // Harmonic phase from cross-type connectivity: more structural
-      // connections unlock richer intervals from the overtone series.
-      const harmonicPhase = crossTypeLinksToPhase(organelle.crossTypeLinks);
-
-      // Pitch: type → relative interval from root → phase collapse → octave
-      const typeKey = typeKeys[typeId];
-      const typeRoot = typeRoots.get(typeKey ?? "") ?? 0;
-      const relativeInterval = ((typeRoot - rootSemitone) % 12 + 12) % 12;
-      const collapsed = collapseToPhase(relativeInterval, harmonicPhase);
-
-      // Base MIDI = root + collapsed relative interval
-      let midiNote = rootMidi + collapsed;
-
-      // Octave offset from particle count (larger = lower), blended normalization
-      midiNote += countToOctaveOffset(organelle.particleCount, bPcMin, bPcMax) * 12;
-
-      // Clamp to register width
-      midiNote = clampToRegister(midiNote, registerWidth);
-
-      // Filter against active pitch classes (buffer bar constraint)
-      const pc = ((midiNote % 12) + 12) % 12;
-      if (!activePitchClasses.has(pc)) {
-        let bestDist = 12;
-        let bestPC = pc;
-        for (const available of activePitchClasses) {
-          const dist = Math.min(
-            ((pc - available) % 12 + 12) % 12,
-            ((available - pc) % 12 + 12) % 12,
-          );
-          if (dist < bestDist) { bestDist = dist; bestPC = available; }
-        }
-        const adjustment = bestPC - pc;
-        midiNote += adjustment > 6 ? adjustment - 12 : adjustment < -6 ? adjustment + 12 : adjustment;
-      }
-
-      // Waveform from sociability
-      const sociability = sociabilities.get(typeKey ?? "") ?? 0.5;
-      const waveform = sociabilityToWaveform(sociability);
-
-      // Compute norms with age for this organelle
-      const hitNorms: EnvelopeNorms = { ...(organelleNorms.get(organelle.id) ?? { countNorm: 0.5, speedNorm: 0.5, densityNorm: 0.5, radiusNorm: 0.5, ageNorm: 0.5 }), ageNorm };
-      const noteDur = computeNoteDuration(hitNorms);
-      const beatDur = barDur / config.beatsPerBar;
-
-      hits.push({
-        time: hitTimes[i],
-        organismId: organism.registryId,
-        typeId,
-        organelleIndex: i,
-        midiNote,
-        volume: densityToVolume(organelle.density) * (1 - 0.5 * hitNorms.countNorm),
-        pan,
-        filterCutoff: countToFilterCutoff(organelle.particleCount, bPcMin, bPcMax),
-        envelope: computeEnvelope(hitNorms),
-        noteDuration: noteDur,
-        gateDuration: noteDurationToSeconds(noteDur, beatDur),
-        waveform,
-        vibratoDepth: hitNorms.speedNorm * 100,
-      });
-    }
-  }
-
-  // ── Bass arpeggio pool (ordered pitches from free particle types) ───
-  const arpNotes: ArpNote[] = [];
-
-  // Collect types with free particles, sorted by abundance (most first)
-  const freeTypes: { typeKey: string; percent: number }[] = [];
-  for (let i = 0; i < typeKeys.length; i++) {
-    const percent = globalMetrics.freeParticlePercentByType.get(i) ?? 0;
-    if (percent > 0) {
-      freeTypes.push({ typeKey: typeKeys[i], percent });
-    }
-  }
-  freeTypes.sort((a, b) => b.percent - a.percent);
-
-  for (const { typeKey, percent } of freeTypes) {
-    // Pitch: type's interval relative to root, placed in bass register
-    // (matches organism hit logic: rootMidi + relativeInterval)
-    const typeSemitone = typeRoots.get(typeKey) ?? 0;
-    const relativeInterval = ((typeSemitone - rootSemitone) % 12 + 12) % 12;
-    let midiNote = 36 + rootSemitone + relativeInterval;
-
-    // Filter against active pitch classes (transition buffer constraint)
-    const pc = ((midiNote % 12) + 12) % 12;
-    if (!activePitchClasses.has(pc)) {
-      let bestDist = 12;
-      let bestPC = pc;
-      for (const available of activePitchClasses) {
-        const dist = Math.min(
-          ((pc - available) % 12 + 12) % 12,
-          ((available - pc) % 12 + 12) % 12,
-        );
-        if (dist < bestDist) { bestDist = dist; bestPC = available; }
-      }
-      // Use circular-aware adjustment to avoid octave jumps at the boundary
-      const adjustment = bestPC - pc;
-      midiNote += adjustment > 6 ? adjustment - 12 : adjustment < -6 ? adjustment + 12 : adjustment;
-    }
-
-    const sociability = sociabilities.get(typeKey) ?? 0.5;
-
-    arpNotes.push({ midiNote, sociability, freePercent: percent });
-  }
-
-  // ── Bass update ──────────────────────────────────────────────────
-  // No organisms → pedal on the tonic only; arpeggiation starts once
-  // at least one organism is alive.  If organisms consumed all free
-  // particles the arp pool is empty — fall back to tonic pedal so
-  // the bass never goes silent.
-  const tonicPedal: ArpNote[] = [{ midiNote: 36 + rootSemitone, sociability: 0.5, freePercent: 1 }];
-  const bassArpNotes: ArpNote[] = organisms.length === 0
-    ? tonicPedal
-    : arpNotes.length > 0 ? arpNotes : tonicPedal;
-
-  const bassUpdate: BassUpdate = {
-    root: rootMidi,
-    fifth: rootMidi + 7,
-    mode,
-    freeParticlePercentByType: globalMetrics.freeParticlePercentByType,
-    isQuartalStack: organisms.length === 0,
-    arpNotes: bassArpNotes,
-    netStability,
-    avgVelocity: globalMetrics.avgVelocity,
-  };
-
   return {
-    barNumber,
-    startTime: barStartTime,
-    duration: barDur,
-    hits,
-    mode,
-    rootMidi,
-    isBufferBar,
-    bufferChord,
-    bassUpdate,
-    netStability,
+    mode, rootMidi, rootSemitone, isBufferBar, bufferChord,
+    activePitchClasses, chordPitchClasses, typeRoots, sociabilities, typePitchRanges,
+    netStability, envelopeRanges: blendedRanges,
     spatialEntropy: globalMetrics.spatialEntropy,
-    envelopeRanges: blendedRanges,
     speciesCycle: prevState?.speciesCycle ?? { played: new Map() },
+    typeKeys, canvasWidth,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/*  Per-species slot computation                                       */
+/* ------------------------------------------------------------------ */
+
+/** Per-slot pitch offsets (semitones) cycled across a tuplet's slots. */
+const ARPEGGIO_OFFSETS: readonly number[] = [0, 7, 4, 12];
+
+/** A single tier's slot fill from one type-layer of a species' polyrhythm. */
+export interface SpeciesSlotResult {
+  readonly tierIndex: number;   // = subdivision - 1
+  readonly slots: readonly { readonly slotIndex: number; readonly note: SlotNote }[];
+}
+
+/**
+ * Maximally-even (Euclidean) onset pattern: k onsets across n slots,
+ * onset o at slot floor(o·n/k). Slot 0 is always an onset.
+ */
+function euclideanOnsets(k: number, n: number): readonly number[] {
+  const slots: number[] = [];
+  for (let o = 0; o < k; o++) slots.push(Math.floor((o * n) / k));
+  return slots;
+}
+
+/**
+ * Smallest rotation ≥ `start` (mod n) that leaves slot 0 empty.
+ * When k < n such a rotation always exists (n − k of the n rotations
+ * put a gap on the downbeat); with a full pattern the start rotation
+ * is returned unchanged.
+ */
+function rotationOffDownbeat(
+  onsets: readonly number[],
+  n: number,
+  start: number,
+): number {
+  let r = ((start % n) + n) % n;
+  for (let i = 0; i < n; i++) {
+    if (!onsets.some(s => (s + r) % n === 0)) return r;
+    r = (r + 1) % n;
+  }
+  return ((start % n) + n) % n;
+}
+
+/**
+ * Compute slot placements for all species as interlocking polyrhythms.
+ *
+ * Groups organisms by colorSignature (species). For each species +
+ * organelle type, the MAX organelle count across all organisms of that
+ * species sets the tuplet grid (e.g. if organism A has 3 Red and
+ * organism B has 5 Red, the species gets a quintuplet Red grid), and
+ * cross-type connectivity sets how many of those slots actually sound:
+ * onsets = 1 + crossTypeLinks, placed maximally evenly (Euclidean).
+ *
+ * The downbeat belongs to ONE anchor layer per species — the type with
+ * the most particles (the lowest voice). Every other layer is rotated
+ * so its pattern avoids slot 0, and lone-organelle non-anchor types are
+ * promoted onto the species' widest grid so they spread across the bar
+ * instead of stacking on the barline.
+ *
+ * Pitch is derived from the oldest organism in the species.
+ *
+ * Returns one SpeciesSlotResult per type per species.
+ */
+export function computeSpeciesSlots(
+  snapshot: BarSnapshot,
+  ctx: BarContext,
+  barStartTime: number,
+  barDur: number,
+  config: ScheduleConfig,
+  barNumber?: number,
+): readonly SpeciesSlotResult[] {
+  const { organisms } = snapshot;
+
+  // Group organisms by species (colorSignature), filtered to active species if set
+  const bySpecies = new Map<string, typeof organisms[number][]>();
+  for (const org of organisms) {
+    if (snapshot.activeSpecies != null && org.colorSignature !== snapshot.activeSpecies) continue;
+    // Skip qualification on bar 0 — all organisms are born at t=0 so none can pass the age check
+    if (barNumber !== 0) {
+      const ageInBars = (barStartTime - org.creationTime) / barDur;
+      if (ageInBars < config.qualificationFraction) continue;
+    }
+    let group = bySpecies.get(org.colorSignature);
+    if (!group) { group = []; bySpecies.set(org.colorSignature, group); }
+    group.push(org);
+  }
+
+  const results: SpeciesSlotResult[] = [];
+
+  for (const [signature, speciesOrganisms] of bySpecies) {
+    // Find oldest organism in species (for pitch derivation)
+    let oldest = speciesOrganisms[0];
+    for (let i = 1; i < speciesOrganisms.length; i++) {
+      if (speciesOrganisms[i].creationTime < oldest.creationTime) {
+        oldest = speciesOrganisms[i];
+      }
+    }
+
+    // Collect all typeIds present across all organisms in this species
+    const allTypeIds = new Set<number>();
+    for (const org of speciesOrganisms) {
+      for (const [typeId] of org.composition) allTypeIds.add(typeId);
+    }
+
+    // For each type, find max organelle count across all organisms
+    const maxCountByType = new Map<number, number>();
+    for (const typeId of allTypeIds) {
+      let maxCount = 0;
+      for (const org of speciesOrganisms) {
+        const count = org.composition.get(typeId) ?? 0;
+        if (count > maxCount) maxCount = count;
+      }
+      maxCountByType.set(typeId, maxCount);
+    }
+
+    // Rank types by average particle count within the species —
+    // rank 0 (most particles, lowest pitch band) is the rhythmic anchor
+    // and the only layer allowed to sound on the downbeat.
+    const avgByType = new Map<number, number>();
+    for (const typeId of allTypeIds) {
+      let total = 0, count = 0;
+      for (const org of speciesOrganisms) {
+        for (const o of org.organelles) {
+          if (o.typeId === typeId) { total += o.particleCount; count++; }
+        }
+      }
+      avgByType.set(typeId, count > 0 ? total / count : 0);
+    }
+    const rankedTypes = [...allTypeIds].sort((a, b) =>
+      (avgByType.get(b)! - avgByType.get(a)!) || a - b,
+    );
+
+    // Widest grid in the species — lone-organelle non-anchor layers are
+    // promoted onto it so they don't all collapse onto tier 0's only slot.
+    let widestGrid = 1;
+    for (const typeId of allTypeIds) {
+      const g = Math.min(maxCountByType.get(typeId)!, MAX_SUBDIVISION);
+      if (g > widestGrid) widestGrid = g;
+    }
+
+    for (let rank = 0; rank < rankedTypes.length; rank++) {
+      const typeId = rankedTypes[rank];
+      const maxCount = maxCountByType.get(typeId)!;
+      if (maxCount === 0) continue;
+      const isAnchor = rank === 0;
+
+      const subdivision = Math.min(maxCount, MAX_SUBDIVISION);
+      const grid = !isAnchor && subdivision === 1
+        ? Math.max(2, widestGrid)
+        : subdivision;
+      const tierIndex = grid - 1;
+
+      // Pitch source: oldest organism's individual organelles of this type.
+      // Each organelle's crossTypeLinks → harmonic phase → pitch.
+      const oldestOrganelles = oldest.organelles.filter(o => o.typeId === typeId);
+      const typeKey = ctx.typeKeys[typeId];
+      const typeRoot = ctx.typeRoots.get(typeKey ?? "") ?? 0;
+      const relativeInterval = ((typeRoot - ctx.rootSemitone) % 12 + 12) % 12;
+
+      // Onset count from connectivity: organelles bonded to more types
+      // fire more often. Non-anchor layers cap at grid − 1 so a rotation
+      // that clears the downbeat always exists.
+      let maxLinks = 0;
+      for (const o of oldestOrganelles) {
+        if (o.crossTypeLinks > maxLinks) maxLinks = o.crossTypeLinks;
+      }
+      const kCap = isAnchor ? grid : Math.max(1, grid - 1);
+      const k = Math.max(1, Math.min(1 + maxLinks, kCap));
+
+      const base = euclideanOnsets(k, grid);
+      const rotation = isAnchor ? 0 : rotationOffDownbeat(base, grid, rank);
+      const slotIndices = base
+        .map(s => (s + rotation) % grid)
+        .sort((a, b) => a - b);
+
+      const slots: { slotIndex: number; note: SlotNote }[] = [];
+      for (let i = 0; i < slotIndices.length; i++) {
+        const s = slotIndices[i];
+        // Pick organelle for this onset (round-robin if oldest has fewer)
+        const organelle = oldestOrganelles.length > 0
+          ? oldestOrganelles[i % oldestOrganelles.length]
+          : null;
+
+        const crossLinks = organelle ? organelle.crossTypeLinks : 0;
+
+        const harmonicPhase = crossTypeLinksToPhase(crossLinks);
+        const collapsed = collapseToPhase(relativeInterval, harmonicPhase);
+
+        // Arpeggiate across the layer's onsets in temporal order:
+        // same-type organelles usually share crossTypeLinks, which would
+        // make every onset the identical pitch. Offsetting by onset
+        // (root→fifth→third→octave, then snapped to the active scale
+        // below) turns a monotone layer into a contour.
+        const arpOffset = ARPEGGIO_OFFSETS[i % ARPEGGIO_OFFSETS.length];
+
+        let midiNote = ctx.rootMidi + collapsed + arpOffset;
+        // Clamp to per-type 2-octave pitch range (driven by particle count)
+        const pitchRange = ctx.typePitchRanges.get(typeId);
+        if (pitchRange) {
+          while (midiNote < pitchRange.lowMidi) midiNote += 12;
+          while (midiNote > pitchRange.highMidi) midiNote -= 12;
+        }
+
+        // Filter against active pitch classes
+        const pc = ((midiNote % 12) + 12) % 12;
+        if (!ctx.activePitchClasses.has(pc)) {
+          let bestDist = 12, bestPC = pc;
+          for (const available of ctx.activePitchClasses) {
+            const dist = Math.min(
+              ((pc - available) % 12 + 12) % 12,
+              ((available - pc) % 12 + 12) % 12,
+            );
+            if (dist < bestDist) { bestDist = dist; bestPC = available; }
+          }
+          const adjustment = bestPC - pc;
+          midiNote += adjustment > 6 ? adjustment - 12 : adjustment < -6 ? adjustment + 12 : adjustment;
+        }
+
+        slots.push({
+          slotIndex: s,
+          note: {
+            midiNote,
+            speciesSignature: signature,
+            typeId,
+            subdivisionIndex: s,
+          },
+        });
+      }
+
+      results.push({ tierIndex, slots });
+    }
+  }
+
+  return results;
+}
+

@@ -51,36 +51,9 @@
   }
 }
 
-.bv-track-wrapper {
+.bv-track {
   position: relative;
   height: 24px;
-}
-
-.bv-dots {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: $sp-5;
-}
-
-.bv-dot {
-  position: absolute;
-  width: $sp-3;
-  height: $sp-3;
-  border-radius: 50%;
-  top: 1px;
-  transform: translateX(-50%);
-  opacity: 0.9;
-  box-shadow: 0 0 4px currentColor;
-}
-
-.bv-track {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: $sp-6;
   background: $surface-overlay;
   border-radius: $sp-3;
   overflow: visible;
@@ -89,21 +62,20 @@
   &.bv-buffer-bar { background: rgba(255, 180, 60, 0.15); }
 }
 
-.bv-beat-lines {
+.bv-dots {
   position: absolute;
   inset: 0;
+  pointer-events: none;
 }
 
-.bv-beat-line {
+.bv-dot {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.15);
-  transform: translateX(-0.5px);
-
-  &.bv-downbeat { background: rgba(255, 255, 255, 0.35); }
-  &.bv-sixteenth { background: $surface-overlay; }
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  opacity: 0.9;
+  box-shadow: 0 0 4px currentColor;
 }
 
 .bv-scrubber {

@@ -4,7 +4,7 @@
 
 import { NumInput } from "./num-input";
 
-export interface NumberInputOptions {
+interface NumberInputOptions {
   label: string;
   value: number;
   setting: string;

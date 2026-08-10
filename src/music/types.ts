@@ -52,12 +52,12 @@ export interface GlobalMetrics {
 /*  Stability                                                          */
 /* ------------------------------------------------------------------ */
 
-export interface SigmoidConfig {
+interface SigmoidConfig {
   readonly midpoint: number;
   readonly steepness: number;
 }
 
-export interface StabilityConfig {
+interface StabilityConfig {
   readonly speciesDiversity: SigmoidConfig;
   readonly inverseVelocity: SigmoidConfig;
   readonly density: SigmoidConfig;
@@ -149,78 +149,91 @@ export interface HarmonicPhase {
   readonly availableIntervals: readonly number[];   // semitone offsets from root that are active
 }
 
-export interface RegisterWidth {
-  readonly lowOctave: number;
-  readonly highOctave: number;
-}
-
 /* ------------------------------------------------------------------ */
-/*  Scheduled Hit                                                      */
+/*  Tuplet Grid (bar-level note scheduling)                            */
 /* ------------------------------------------------------------------ */
 
-export interface ScheduledHit {
-  readonly time: number;             // AudioContext time
-  readonly organismId: number;
-  readonly typeId: number;
-  readonly organelleIndex: number;   // which organelle within this type's subdivision
+/** Minimal note data produced by the worker — just pitch + identity.
+ *  Playback parameters (volume, envelope, etc.) are computed at play
+ *  time on the main thread from live simulation state.
+ *  Species-level: one voice per organelle type per species. */
+export interface SlotNote {
   readonly midiNote: number;
-  readonly volume: number;           // 0–1
-  readonly pan: number;              // -1 (left) to +1 (right)
-  readonly filterCutoff: number;     // Hz
-  readonly envelope: EnvelopeParams;
-  readonly noteDuration: NoteDuration;
-  readonly gateDuration: number;     // seconds — how long the note is held before release
-  readonly waveform: WaveformParams;
-  readonly vibratoDepth: number;     // cents (0–100)
+  readonly speciesSignature: string;   // colorSignature — species identity
+  readonly typeId: number;
+  readonly subdivisionIndex: number;   // slot within tuplet (0..maxCount-1)
 }
+
+/** Pre-allocated grid: tiers[tierIndex][slotIndex] = notes for that slot.
+ *  tierIndex = subdivision count − 1 (tier 0 = whole note, tier 2 = triplets, etc.)
+ *  Each tier has (tierIndex + 1) evenly-spaced slots across the bar. */
+export interface TupletGrid {
+  readonly tiers: (SlotNote[] | null)[][];
+}
+
+/** Maximum number of subdivision tiers (= max organelles per organism). */
+export const MAX_SUBDIVISION = 16;
+
+/** Allocate an empty grid with all slots set to null. */
+export function createTupletGrid(): TupletGrid {
+  const tiers: (SlotNote[] | null)[][] = [];
+  for (let t = 0; t < MAX_SUBDIVISION; t++) {
+    const slots: (SlotNote[] | null)[] = [];
+    for (let s = 0; s <= t; s++) slots.push(null);
+    tiers.push(slots);
+  }
+  return { tiers };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Worker streaming messages                                          */
+/* ------------------------------------------------------------------ */
+
+/** Bar-level metadata — sent immediately when the worker starts. */
+export interface ScheduleWorkerBarMeta {
+  readonly kind: "bar-meta";
+  readonly id: number;
+  readonly barNumber: number;
+  readonly mode: ModeDefinition;
+  readonly rootMidi: number;
+  readonly isBufferBar: boolean;
+  readonly bufferChord: TransitionChord | null;
+  readonly netStability: number;
+  readonly spatialEntropy: number;
+  readonly envelopeRanges: EnvelopeRanges;
+  readonly speciesCycle: SpeciesCycle;
+  /** This bar's chord pitch classes (diatonic triad, or buffer chord). */
+  readonly chordPitchClasses: ReadonlySet<number>;
+}
+
+/** Per-organism slot fill — streamed as each organism is computed. */
+export interface ScheduleWorkerSlotFill {
+  readonly kind: "slot-fill";
+  readonly id: number;
+  readonly tierIndex: number;
+  readonly slotIndex: number;
+  readonly notes: readonly SlotNote[];
+}
+
+/** Signals that all organisms have been processed for this bar. */
+export interface ScheduleWorkerDone {
+  readonly kind: "done";
+  readonly id: number;
+}
+
+/** Discriminated union of all worker→main messages. */
+export type ScheduleWorkerMsg =
+  | ScheduleWorkerBarMeta
+  | ScheduleWorkerSlotFill
+  | ScheduleWorkerDone;
 
 /* ------------------------------------------------------------------ */
 /*  Scheduled Bar                                                      */
 /* ------------------------------------------------------------------ */
 
-/** A pitch in the bass arpeggio pool, ordered by free particle abundance. */
-export interface ArpNote {
-  /** MIDI note to play. */
-  readonly midiNote: number;
-  /** Sociability of this type (for waveform selection). */
-  readonly sociability: number;
-  /** Free particle percentage for this type (for volume). */
-  readonly freePercent: number;
-}
-
-export interface BassUpdate {
-  readonly root: number;             // MIDI note (base root from oldest species)
-  readonly fifth: number;            // MIDI note
-  readonly mode: ModeDefinition;
-  readonly freeParticlePercentByType: ReadonlyMap<number, number>;
-  readonly isQuartalStack: boolean;  // true when no organisms exist
-  /** Ordered pitch pool for bass arpeggiator (most abundant type first). */
-  readonly arpNotes: readonly ArpNote[];
-  /** Simulation stability (0 = chaos, 1 = order) for interval selection. */
-  readonly netStability: number;
-  /** Global average particle velocity — drives bass staccato (higher = more staccato). */
-  readonly avgVelocity: number;
-}
-
 export interface TransitionChord {
   readonly name: string;              // e.g. "G dom7"
   readonly pitchClasses: ReadonlySet<number>;
-}
-
-export interface ScheduledBar {
-  readonly barNumber: number;
-  readonly startTime: number;        // AudioContext time
-  readonly duration: number;         // seconds
-  readonly hits: readonly ScheduledHit[];
-  readonly mode: ModeDefinition;
-  readonly rootMidi: number;
-  readonly isBufferBar: boolean;
-  readonly bufferChord: TransitionChord | null;
-  readonly bassUpdate: BassUpdate;
-  readonly netStability: number;
-  readonly spatialEntropy: number;
-  readonly envelopeRanges: EnvelopeRanges;
-  readonly speciesCycle: SpeciesCycle;
 }
 
 /* ------------------------------------------------------------------ */
@@ -250,6 +263,8 @@ export interface SnapshotOrganism {
   readonly creationTime: number;     // timestamp at formation
   readonly organelles: readonly SnapshotOrganelle[];
   readonly composition: ReadonlyMap<number, number>;  // typeId → count
+  /** Type-adjacency fingerprint (cross-type edges from organelle tree). Wire format: number[]. */
+  readonly typeAdjacency: ReadonlySet<number>;
 }
 
 export interface BarSnapshot {
@@ -258,7 +273,12 @@ export interface BarSnapshot {
   readonly forceMatrix: ForceMatrix;
   readonly typeKeys: readonly string[];
   readonly canvasWidth: number;
-  readonly beatsPerBar: number;
+  /** If set, overrides the root derivation in computeBarContext (semitone 0-11). */
+  readonly rootOverride: number | null;
+  /** If set, only this species plays during this bar (organism-driven cycle). */
+  readonly activeSpecies: string | null;
+  /** Diatonic degree (0 = I) of this bar's chord within the current key. */
+  readonly chordDegree: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,9 +317,9 @@ export interface MusicState {
   readonly currentMode: ModeDefinition;
   readonly currentRootMidi: number;
   readonly netStability: number;
-  readonly prevScheduledBar: ScheduledBar | null;
   readonly isBufferBar: boolean;
   readonly bufferChord: TransitionChord | null;
   readonly envelopeRanges: EnvelopeRanges | null;
   readonly speciesCycle: SpeciesCycle;
+  readonly organismCycleNumber: number;
 }

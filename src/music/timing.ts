@@ -9,13 +9,12 @@
 /*  Core timing                                                        */
 /* ------------------------------------------------------------------ */
 
-/** Duration of one bar in seconds. */
+/** Duration of one bar in seconds (fixed 4 beats per bar). */
 export function barDuration(
   bpm: number,
-  beatsPerBar: number,
   timeMultiplier: number,
 ): number {
-  return (60 / Math.max(20, bpm)) * beatsPerBar / timeMultiplier;
+  return (60 / Math.max(20, bpm)) * 4 / timeMultiplier;
 }
 
 /** Which bar number we're in (0-based) given an absolute time. */
@@ -52,18 +51,4 @@ export function subdivisionTimes(
     result.push(barStart + (i / count) * barDur);
   }
   return result;
-}
-
-/**
- * Check whether a bar boundary was crossed between prevTime and now.
- * Returns the new bar number if crossed, or null if still in the same bar.
- */
-export function checkBarBoundary(
-  tSoundStart: number,
-  prevBarNumber: number,
-  now: number,
-  barDur: number,
-): number | null {
-  const newBar = currentBarNumber(tSoundStart, now, barDur);
-  return newBar > prevBarNumber ? newBar : null;
 }

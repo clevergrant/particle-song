@@ -121,7 +121,7 @@ const CHROME_CSS = `
 `;
 
 /** Callback to get rects of other visible windows (injected by WindowManager) */
-export type GetOtherRectsFn = (excludeId: string) => readonly Rect[];
+type GetOtherRectsFn = (excludeId: string) => readonly Rect[];
 
 export class FloatingWindow extends HTMLElement {
   private _shadow: ShadowRoot;

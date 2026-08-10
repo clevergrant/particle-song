@@ -16,7 +16,13 @@ import type { ModeDefinition, TransitionChord } from "./types";
 /*  Dissonance threshold                                               */
 /* ------------------------------------------------------------------ */
 
-export const DISSONANCE_THRESHOLD = 3;
+const DISSONANCE_THRESHOLD = 3;
+
+/** Above this threshold, use a diminished 7th pivot instead of a scored
+ *  bridge chord.  A dim7 divides the octave into four minor thirds, so
+ *  any of its notes can act as a leading tone — it resolves convincingly
+ *  to any key regardless of harmonic distance. */
+const HIGH_DISSONANCE_THRESHOLD = 6;
 
 /* ------------------------------------------------------------------ */
 /*  Chord quality definitions                                          */
@@ -71,23 +77,11 @@ export function pitchClassSet(mode: ModeDefinition, rootSemitone: number): Reado
 }
 
 /** Count of pitch classes in A that are not in B, plus those in B not in A. */
-export function dissonanceScore(a: ReadonlySet<number>, b: ReadonlySet<number>): number {
+function dissonanceScore(a: ReadonlySet<number>, b: ReadonlySet<number>): number {
   let diff = 0;
   for (const pc of a) if (!b.has(pc)) diff++;
   for (const pc of b) if (!a.has(pc)) diff++;
   return diff;
-}
-
-/** Intersection of two pitch class sets. */
-export function intersectPitchClasses(
-  a: ReadonlySet<number>,
-  b: ReadonlySet<number>,
-): ReadonlySet<number> {
-  const result = new Set<number>();
-  for (const pc of a) {
-    if (b.has(pc)) result.add(pc);
-  }
-  return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -261,6 +255,27 @@ function selectBridgeChord(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Diminished 7th pivot (high-dissonance jumps)                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build a fully-diminished 7th chord rooted a half-step below the
+ * incoming root.  This is the classic vii°7 → I resolution: the root
+ * of the dim7 is the leading tone of the target key, so it pulls
+ * strongly into the new tonality regardless of where we came from.
+ *
+ * Dim7 = four notes a minor-third apart (0, 3, 6, 9 from its root).
+ */
+function buildDim7Pivot(incomingRoot: number): TransitionChord {
+  const dim7Root = ((incomingRoot - 1) % 12 + 12) % 12;
+  const pcs = new Set([0, 3, 6, 9].map(o => (dim7Root + o) % 12));
+  return {
+    name: `${NOTE_NAMES[dim7Root]} dim7`,
+    pitchClasses: pcs,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Buffer decision (public API — signature unchanged)                 */
 /* ------------------------------------------------------------------ */
 
@@ -292,9 +307,15 @@ export function computeTransitionBuffer(
   const score = dissonanceScore(prevFull, incoming);
   if (score < DISSONANCE_THRESHOLD) return null;
 
-  // If already in a buffer bar, select a new bridge chord that connects
-  // the *original* outgoing tonality to the incoming one.  The prevMode/prevRoot
-  // still represent the pre-transition state (threaded via MusicState), so
-  // the bridge chord is always chosen with full context of both endpoints.
+  // Really big jumps (≥6 differing PCs): use a dim7 chord rooted on the
+  // leading tone of the target key.  Trying to find a smooth pivot across
+  // this much harmonic distance produces wishy-washy results; the dim7's
+  // equal-interval symmetry lets it resolve convincingly to any key.
+  if (score >= HIGH_DISSONANCE_THRESHOLD) {
+    return buildDim7Pivot(nextRoot);
+  }
+
+  // Medium jumps (3–5 differing PCs): scored pivot chord that balances
+  // voice-leading, functional gravity, and common-tone continuity.
   return selectBridgeChord(prevMode, prevRoot, nextMode, nextRoot);
 }

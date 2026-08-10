@@ -20,6 +20,30 @@ const CIRCLE_OF_FIFTHS: readonly number[] = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 
 /* ------------------------------------------------------------------ */
 
 /**
+ * Rank type keys by average net affinity, most attractive first.
+ */
+function computeTypeAffinityOrder(
+  forceMatrix: ForceMatrix,
+  typeKeys: readonly string[],
+): readonly string[] {
+  const affinities: { key: string; avgAffinity: number }[] = typeKeys.map(key => {
+    const row = forceMatrix[key];
+    if (!row) return { key, avgAffinity: 0 };
+    let sum = 0;
+    let count = 0;
+    for (const otherKey of typeKeys) {
+      if (otherKey === key) continue;
+      sum += row[otherKey] ?? 0;
+      count++;
+    }
+    return { key, avgAffinity: count > 0 ? sum / count : 0 };
+  });
+
+  affinities.sort((a, b) => b.avgAffinity - a.avgAffinity);
+  return affinities.map(a => a.key);
+}
+
+/**
  * Compute a circle-of-fifths root assignment for each particle type.
  *
  * Strategy: sort types by average net affinity (most attractive first),
@@ -34,28 +58,13 @@ export function computeTypeRoots(
 ): ReadonlyMap<string, number> {
   if (typeKeys.length === 0) return new Map();
 
-  // Compute average net affinity per type (how attracted it is to others on average)
-  const affinities: { key: string; avgAffinity: number }[] = typeKeys.map(key => {
-    const row = forceMatrix[key];
-    if (!row) return { key, avgAffinity: 0 };
-    let sum = 0;
-    let count = 0;
-    for (const otherKey of typeKeys) {
-      if (otherKey === key) continue;
-      sum += row[otherKey] ?? 0;
-      count++;
-    }
-    return { key, avgAffinity: count > 0 ? sum / count : 0 };
-  });
+  const order = computeTypeAffinityOrder(forceMatrix, typeKeys);
 
-  // Sort by affinity descending — most attractive types get adjacent CoF positions
-  affinities.sort((a, b) => b.avgAffinity - a.avgAffinity);
-
-  // Assign circle-of-fifths positions
+  // Assign circle-of-fifths positions in affinity order
   const result = new Map<string, number>();
-  for (let i = 0; i < affinities.length; i++) {
+  for (let i = 0; i < order.length; i++) {
     const cofIndex = i % CIRCLE_OF_FIFTHS.length;
-    result.set(affinities[i].key, CIRCLE_OF_FIFTHS[cofIndex]);
+    result.set(order[i], CIRCLE_OF_FIFTHS[cofIndex]);
   }
 
   return result;

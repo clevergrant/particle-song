@@ -11,9 +11,13 @@
 .force-matrix-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  align-self: stretch;
   gap: $sp-3;
+}
 
-  label { flex: 1; }
+.force-matrix-container > .control-group {
+  align-self: stretch;
 }
 
 .force-matrix-randomize,

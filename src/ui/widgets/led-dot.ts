@@ -3,7 +3,7 @@
  * Replaces checkboxes for on/off toggle states.
  * Has a `checked` property and fires `change` events.
  */
-export class LedDot extends HTMLElement {
+class LedDot extends HTMLElement {
   private _dot: HTMLElement;
   private _checked = false;
   private _color = "var(--accent-light)";

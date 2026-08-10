@@ -7,7 +7,7 @@ export interface Rect {
   readonly h: number;
 }
 
-export interface SnapResult {
+interface SnapResult {
   readonly x: number;
   readonly y: number;
   readonly snappedX: boolean;

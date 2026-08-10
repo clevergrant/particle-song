@@ -810,57 +810,6 @@ export class EnvelopeEditor {
  * Uses the editor's proportions for time allocation (for display).
  * Values are raw amplitude [0, 1]. Caller scales by volume.
  */
-export function envelopeShapeToLUT(shape: EnvelopeShape, size: number = LUT_SIZE): Float32Array {
-  const lut = new Float32Array(size);
-  const sections: { key: string; section: EnvelopeSection | null; level?: number }[] = [
-    { key: "attack", section: shape.attack },
-    { key: "decay", section: shape.decay },
-    { key: "sustain", section: null, level: shape.sustainLevel },
-    { key: "release", section: shape.release },
-  ];
-  const totalProp = shape.attack.proportion + (shape.decay.proportion) +
-    // Sustain proportion: infer from remainder (since it's not stored in EnvelopeSection)
-    // For display LUT, use a default sustain proportion
-    0.3 + shape.release.proportion;
-  // Actually, let's compute proportion from shape sections that exist
-  // Attack + Decay + Release have proportions; sustain fills the rest to make display nice
-  const adrProp = shape.attack.proportion + shape.decay.proportion + shape.release.proportion;
-  // Give sustain 30% of adr total for display purposes
-  const sustainDisplayProp = adrProp * 0.4;
-  const totalWithSustain = adrProp + sustainDisplayProp;
-
-  const props = [
-    shape.attack.proportion / totalWithSustain,
-    shape.decay.proportion / totalWithSustain,
-    sustainDisplayProp / totalWithSustain,
-    shape.release.proportion / totalWithSustain,
-  ];
-
-  for (let i = 0; i < size; i++) {
-    const globalX = i / (size - 1);
-
-    let offset = 0;
-    let value = 0;
-    for (let s = 0; s < 4; s++) {
-      const p = props[s];
-      if (globalX <= offset + p || s === 3) {
-        const localX = p > 0 ? clamp((globalX - offset) / p, 0, 1) : 0;
-        const sec = sections[s];
-        if (sec.section && sec.section.nodes.length >= 2) {
-          value = findYInNodes(sec.section.nodes, localX);
-        } else {
-          value = sec.level ?? 0;
-        }
-        break;
-      }
-      offset += p;
-    }
-
-    lut[i] = clamp(value, 0, 1);
-  }
-  return lut;
-}
-
 /**
  * Build a gate-aware LUT from an EnvelopeShape with explicit A/D/S/R durations.
  * The sustain section is a flat line at shape.sustainLevel for sustainDur.

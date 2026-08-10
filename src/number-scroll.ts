@@ -8,10 +8,6 @@ export function attachNumberScroll(container: HTMLElement) {
   container.addEventListener("wheel", onWheel, { passive: false });
 }
 
-export function detachNumberScroll(container: HTMLElement) {
-  container.removeEventListener("wheel", onWheel);
-}
-
 /** Compute the number of decimal places needed for a given step size. */
 export function stepDecimals(step: number): number {
   return step < 1 ? (String(step).split(".")[1]?.length ?? 0) : 0;
