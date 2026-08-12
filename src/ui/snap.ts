@@ -1,5 +1,7 @@
 /** Pure snap calculation functions for window positioning */
 
+import { SNAP_THRESHOLD } from "../constants";
+
 export interface Rect {
   readonly x: number;
   readonly y: number;
@@ -13,8 +15,6 @@ interface SnapResult {
   readonly snappedX: boolean;
   readonly snappedY: boolean;
 }
-
-const SNAP_THRESHOLD = 8;
 
 /**
  * Snap a rect to viewport edges. Returns snapped position.

@@ -1,9 +1,10 @@
+import { FIXED_DT, MAX_STEPS_PER_FRAME } from "./constants";
 import { simulations } from "./simulations";
-import { attachNumberScroll } from "./number-scroll";
-import { attachNumberDrag } from "./number-drag";
+import { attachNumberScroll } from "./ui/number-scroll";
+import { attachNumberDrag } from "./ui/number-drag";
 import type { Simulation, GpuContext } from "./types";
-import { ShaderMenu } from "./shader-menu";
-import "./num-input"; // register <num-input> custom element
+import { ShaderMenu } from "./ui/shader-menu";
+import "./ui/num-input"; // register <num-input> custom element
 import "./ui/floating-window"; // register <floating-window> custom element
 import "./ui/widgets"; // register all widget custom elements
 import { WindowManager } from "./ui/window-manager";
@@ -238,8 +239,6 @@ function debouncedResize() {
   resizeTimer = window.setTimeout(resize, 100);
 }
 
-const FIXED_DT = 1 / 60;
-const MAX_STEPS_PER_FRAME = 3;
 let accumulator = 0;
 let paused = false;
 

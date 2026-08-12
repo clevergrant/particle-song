@@ -1,119 +1,109 @@
 import { autoBalance } from "../auto-balance"
-import { ColorPicker } from "../color-picker"
-import { CurveEditor } from "../curve-editor"
 import {
-	DEFAULT_DETECTION_CONFIG,
-	toroidalDelta,
-	updateRegistry,
-	type DetectionConfig,
-	type DetectionFrame,
-	type OrganelleState,
-	type OrganelleTreeNode,
-	type OrganismRegistry,
+    DEFAULT_DETECTION_CONFIG,
+    DENSITY_TARGET,
+    MAX_PARTICLES,
+    MAX_TYPES,
+    MIN_PER_ACTIVE_TYPE,
+    PARTICLE_STRIDE,
+    WORKGROUP_SIZE,
+} from "../constants"
+import { ColorPicker } from "../ui/color-picker"
+import { CurveEditor } from "../ui/curve-editor"
+import {
+    toroidalDelta,
+    updateRegistry,
+    type DetectionConfig,
+    type DetectionFrame,
+    type OrganelleState,
+    type OrganelleTreeNode,
+    type OrganismRegistry,
 } from "../detection"
-import { deserializeDetectionFrame } from "../detection-serialization"
+import { deserializeDetectionFrame } from "../detection/serialization"
 import type {
-	DetectionWorkerRequest,
-	DetectionWorkerResponse,
-	DetectionFrameWire,
-} from "../detection-worker-types"
-import { EnvelopeEditor, buildGateAwareLUT } from "../envelope-editor"
-import { applyStepDelta } from "../number-scroll"
+    DetectionFrameWire,
+    DetectionWorkerRequest,
+    DetectionWorkerResponse,
+} from "../detection/worker-types"
+import { applyStepDelta } from "../ui/number-scroll"
 import {
-	predictOrganisms,
-	type OrganismPrediction,
-} from "../organism-prediction"
+    predictOrganisms,
+    type OrganismPrediction,
+} from "../detection/organism-prediction"
 import { CustomParticle, type ForceMatrix } from "../particles"
 import type { GpuContext, Simulation, WindowDefinition } from "../types"
-import { createNumberGroup } from "../ui-helpers"
-import type { MiniClock } from "../ui/widgets/mini-clock"
-import type { MiniGauge } from "../ui/widgets/mini-gauge"
-import type { StabilityBars } from "../ui/widgets/stability-bars"
+import { createNumberGroup } from "../ui/ui-helpers"
 import type { VuMeter } from "../ui/widgets/vu-meter"
+import type { MiniGauge } from "../ui/widgets/mini-gauge"
 
-// New music pipeline
-import { AudioGraph } from "../music/audio-graph"
-import {
-	hideBarVisualizer,
-	onBarsPerMelodyChange,
-	onBpmChange,
-	onCyclesChange,
-	onNiceModeChange,
-	onPlayToggle,
-	setBarsPerMelody,
-	setBpm,
-	setCycles,
-	setNiceMode,
-	setPlayState,
-	showBarVisualizer,
-	updateBarVisualizer,
-} from "../music/bar-visualizer"
-import { type ScheduleConfig } from "../music/hit-scheduler"
-import { computeDroneVoices } from "../music/particle-chorus"
-import { extractTypeAdjacency } from "../music/structure-fingerprint"
-import {
-	type OrganismCycle,
-	type RootStrategy,
-	buildOrganismCycle,
-	advanceCycle,
-	createInitialCycle,
-} from "../music/organism-cycle"
-import {
-	type SupremacyState,
-	createInitialSupremacy,
-	updateSupremacy,
-	shouldRandomize,
-	resetSupremacy,
-} from "../music/supremacy-tracker"
-import {
-	serializeBarSnapshot,
-	serializeMusicState,
-	deserializeBarMeta,
-	type ScheduleWorkerMsgWire,
-	type BarMetaWire,
-} from "../music/worker-serialization"
-import type { ScheduleWorkerRequest } from "../music/schedule-worker"
-import {
-	buildPlayTimeContext,
-	computePlaybackParams,
-	type PlaybackParams,
-	type PlayTimeContext,
-} from "../music/play-time-params"
-import {
-	barDuration,
-	barStartTime as barStartTimeFn,
-	currentBarNumber as currentBarNumberFn,
-} from "../music/timing"
-import type {
-	BarSnapshot,
-	GlobalMetrics,
-	MusicState,
-	ScheduleWorkerBarMeta,
-	SlotNote,
-	SnapshotOrganelle,
-	SnapshotOrganism,
-} from "../music/types"
+import { MusicEngine } from "../music2"
 
 import {
-	PARTICLE_PREFIX,
-	buildParticleShader,
-	buildQuadShader,
-	effectDefaults,
-	findParticleEffect,
-	findPostEffect,
-	particleEffects,
-	postEffects,
-	type ShaderEffect,
+    PARTICLE_PREFIX,
+    buildParticleShader,
+    buildQuadShader,
+    effectDefaults,
+    findParticleEffect,
+    findPostEffect,
+    particleEffects,
+    postEffects,
+    type ShaderEffect,
 } from "../shader-registry"
 import jfaComputeSrc from "../shaders/jfa.compute.wgsl?raw"
 import computeShaderSrc from "../shaders/particles.compute.wgsl?raw"
 import stainUpdateSrc from "../shaders/stain-update.wgsl?raw"
+import { buildDisplayWindow } from "./windows/display"
+import { buildPhysicsWindow } from "./windows/physics"
+import { buildParticlesWindow } from "./windows/particles"
+import { buildMusicWindow } from "./windows/music"
+import { buildDetectionWindow } from "./windows/detection"
+import { buildShadersWindow } from "./windows/shaders"
+import { closeLedger, updateLedgerUI } from "./ledger"
+import { syncMatrixHidden, syncMatrixUI } from "./force-matrix-ui"
+import detectionFillFrag from "../shaders/basic-particles/detection-fill.frag.wgsl?raw"
+import detectionEdgeSrc from "../shaders/basic-particles/detection-edge.wgsl?raw"
+import organismFillFrag from "../shaders/basic-particles/organism-fill.frag.wgsl?raw"
+import centroidPrefix from "../shaders/basic-particles/centroid-prefix.wgsl?raw"
+import centroidVisualFrag from "../shaders/basic-particles/centroid-visual.frag.wgsl?raw"
+import centroidThinRingFrag from "../shaders/basic-particles/centroid-thin-ring.frag.wgsl?raw"
+import centroidFillPrefixSrc from "../shaders/basic-particles/centroid-fill-prefix.wgsl?raw"
+import centroidFillFrag from "../shaders/basic-particles/centroid-fill.frag.wgsl?raw"
+import linePrefix from "../shaders/basic-particles/line-prefix.wgsl?raw"
+import lineVisualFrag from "../shaders/basic-particles/line-visual.frag.wgsl?raw"
+import lineFillPrefixSrc from "../shaders/basic-particles/line-fill-prefix.wgsl?raw"
+import lineFillFrag from "../shaders/basic-particles/line-fill.frag.wgsl?raw"
+import organismEdgeSrc from "../shaders/basic-particles/organism-edge.wgsl?raw"
+import jfaOrganelleSeedFrag from "../shaders/basic-particles/jfa-organelle-seed.frag.wgsl?raw"
+import jfaOrganismSeedFrag from "../shaders/basic-particles/jfa-organism-seed.frag.wgsl?raw"
+import centroidSeedFrag from "../shaders/basic-particles/centroid-seed.frag.wgsl?raw"
+import lineSeedFrag from "../shaders/basic-particles/line-seed.frag.wgsl?raw"
+import jfaEdgePrefix from "../shaders/basic-particles/jfa-edge-prefix.wgsl?raw"
+import jfaOrganelleEdgeFrag from "../shaders/basic-particles/jfa-organelle-edge.frag.wgsl?raw"
+import jfaOrganismEdgeFrag from "../shaders/basic-particles/jfa-organism-edge.frag.wgsl?raw"
+
+/* ------------------------------------------------------------------ */
+/*  GPU pipeline helpers — reduce repeated blend/target boilerplate.   */
+/* ------------------------------------------------------------------ */
+
+/** Standard alpha blend: `src * srcAlpha + dst * (1 - srcAlpha)`. Used by every
+ *  overlay pipeline that composites onto the canvas. */
+const ALPHA_BLEND: GPUBlendState = {
+	color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+	alpha: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+}
+
+/** Depth state for organism/centroid/line fill pipelines that rank overlaps by depth. */
+const DEPTH_LESS_EQUAL: GPUDepthStencilState = {
+	format: "depth24plus",
+	depthWriteEnabled: true,
+	depthCompare: "less-equal",
+}
 
 /* ------------------------------------------------------------------ */
 /*  Pure helpers for the force matrix                                  */
 /* ------------------------------------------------------------------ */
 
-function emptyMatrix(types: readonly string[]): ForceMatrix {
+export function emptyMatrix(types: readonly string[]): ForceMatrix {
 	const m: Record<string, Record<string, number>> = {}
 	for (const src of types) {
 		const row: Record<string, number> = {}
@@ -123,7 +113,7 @@ function emptyMatrix(types: readonly string[]): ForceMatrix {
 	return m
 }
 
-function randomizeMatrix(types: readonly string[]): ForceMatrix {
+export function randomizeMatrix(types: readonly string[]): ForceMatrix {
 	const m: Record<string, Record<string, number>> = {}
 	for (const src of types) {
 		const row: Record<string, number> = {}
@@ -134,7 +124,7 @@ function randomizeMatrix(types: readonly string[]): ForceMatrix {
 	return m
 }
 
-function resizeMatrix(
+export function resizeMatrix(
 	prev: ForceMatrix,
 	types: readonly string[],
 ): ForceMatrix {
@@ -147,11 +137,11 @@ function resizeMatrix(
 	return m
 }
 
-function matrixToJSON(matrix: ForceMatrix): string {
+export function matrixToJSON(matrix: ForceMatrix): string {
 	return JSON.stringify(matrix)
 }
 
-function matrixFromJSON(json: string, types: readonly string[]): ForceMatrix {
+export function matrixFromJSON(json: string, types: readonly string[]): ForceMatrix {
 	try {
 		const raw = JSON.parse(json) as Record<string, Record<string, number>>
 		return resizeMatrix(raw, types)
@@ -161,205 +151,199 @@ function matrixFromJSON(json: string, types: readonly string[]): ForceMatrix {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Constants                                                          */
-/* ------------------------------------------------------------------ */
-
-const MAX_PARTICLES = 10000
-const MAX_TYPES = 32
-const DENSITY_TARGET = 0.0017 // particles per pixel at scale 1.0
-const MIN_PER_ACTIVE_TYPE = 300
-const PARTICLE_STRIDE = 48 // bytes per Particle struct (must match WGSL)
-const WORKGROUP_SIZE = 64
-
-/* ------------------------------------------------------------------ */
 /*  Simulation                                                         */
 /* ------------------------------------------------------------------ */
 
 export class RandomDots implements Simulation {
 	name = "Random Dots"
-	settingsVersion = "2026-03-30"
+	settingsVersion = "2026-08-12-per-type-progression-v3"
 
 	// GPU resources
-	private device: GPUDevice | null = null
-	private canvas: HTMLCanvasElement | null = null
-	private canvasContext: GPUCanvasContext | null = null
-	private canvasFormat: GPUTextureFormat = "bgra8unorm"
+	device: GPUDevice | null = null
+	canvas: HTMLCanvasElement | null = null
+	canvasContext: GPUCanvasContext | null = null
+	canvasFormat: GPUTextureFormat = "bgra8unorm"
 
 	// Compute pipeline
-	private computePipeline: GPUComputePipeline | null = null
-	private computeBindGroupLayout: GPUBindGroupLayout | null = null
-	private computeBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
+	computePipeline: GPUComputePipeline | null = null
+	computeBindGroupLayout: GPUBindGroupLayout | null = null
+	computeBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
 		null,
 		null,
 	]
-	private particleBuffers: [GPUBuffer | null, GPUBuffer | null] = [null, null]
-	private particleStagingBuffer: GPUBuffer | null = null
-	private simParamsBuffer: GPUBuffer | null = null
-	private forceMatrixBuffer: GPUBuffer | null = null
-	private stressBuffer: GPUBuffer | null = null
-	private peakUpdatePipeline: GPUComputePipeline | null = null
-	private pingPong = 0
+	particleBuffers: [GPUBuffer | null, GPUBuffer | null] = [null, null]
+	particleStagingBuffer: GPUBuffer | null = null
+	simParamsBuffer: GPUBuffer | null = null
+	forceMatrixBuffer: GPUBuffer | null = null
+	stressBuffer: GPUBuffer | null = null
+	peakUpdatePipeline: GPUComputePipeline | null = null
+	pingPong = 0
 
 	// Render pipeline (particles)
-	private particleRenderPipeline: GPURenderPipeline | null = null
-	private particleRenderBindGroupLayout: GPUBindGroupLayout | null = null
-	private particleRenderBindGroups: [GPUBindGroup | null, GPUBindGroup | null] =
+	particleRenderPipeline: GPURenderPipeline | null = null
+	particleRenderBindGroupLayout: GPUBindGroupLayout | null = null
+	particleRenderBindGroups: [GPUBindGroup | null, GPUBindGroup | null] =
 		[null, null]
-	private renderParamsBuffer: GPUBuffer | null = null
-	private falloffTexture: GPUTexture | null = null
-	private falloffSampler: GPUSampler | null = null
+	renderParamsBuffer: GPUBuffer | null = null
+	falloffTexture: GPUTexture | null = null
+	falloffSampler: GPUSampler | null = null
 
 	// Render pipeline (circle overlay) — same shaders, different blend + mode
-	private circleRenderPipeline: GPURenderPipeline | null = null
-	private circleRenderParamsBuffer: GPUBuffer | null = null
-	private circleRenderBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
+	circleRenderPipeline: GPURenderPipeline | null = null
+	circleRenderParamsBuffer: GPUBuffer | null = null
+	circleRenderBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
 		null,
 		null,
 	]
 
 	// Detection pipelines: fill organelle IDs to R8Uint + color to RGBA8, edge-detect outlines
-	private detectionIdTexture: GPUTexture | null = null
-	private detectionColorTexture: GPUTexture | null = null
-	private detectionFillPipeline: GPURenderPipeline | null = null
-	private detectionEdgePipeline: GPURenderPipeline | null = null
-	private detectionFillParamsBuffer: GPUBuffer | null = null
-	private detectionFillBindGroups: [GPUBindGroup | null, GPUBindGroup | null] =
+	detectionIdTexture: GPUTexture | null = null
+	detectionColorTexture: GPUTexture | null = null
+	detectionFillPipeline: GPURenderPipeline | null = null
+	detectionEdgePipeline: GPURenderPipeline | null = null
+	detectionFillParamsBuffer: GPUBuffer | null = null
+	detectionFillBindGroups: [GPUBindGroup | null, GPUBindGroup | null] =
 		[null, null]
-	private detectionEdgeBindGroupLayout: GPUBindGroupLayout | null = null
-	private detectionEdgeBindGroup: GPUBindGroup | null = null
+	detectionEdgeBindGroupLayout: GPUBindGroupLayout | null = null
+	detectionEdgeBindGroup: GPUBindGroup | null = null
 
 	// Organism outline pipelines: fill organism IDs to R8Uint (inflated particles), edge-detect white outlines
-	private organismIdTexture: GPUTexture | null = null
-	private organismFillPipeline: GPURenderPipeline | null = null
-	private organismFillParamsBuffer: GPUBuffer | null = null
-	private organismFillBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
+	organismIdTexture: GPUTexture | null = null
+	organismFillPipeline: GPURenderPipeline | null = null
+	organismFillParamsBuffer: GPUBuffer | null = null
+	organismFillBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
 		null,
 		null,
 	]
-	private organismEdgePipeline: GPURenderPipeline | null = null
-	private organismEdgeBindGroupLayout: GPUBindGroupLayout | null = null
-	private organismEdgeBindGroup: GPUBindGroup | null = null
+	organismEdgePipeline: GPURenderPipeline | null = null
+	organismEdgeBindGroupLayout: GPUBindGroupLayout | null = null
+	organismEdgeBindGroup: GPUBindGroup | null = null
 
 	// JFA bubble boundary system
-	private jfaOrganelleTextures: [GPUTexture | null, GPUTexture | null] = [
+	jfaOrganelleTextures: [GPUTexture | null, GPUTexture | null] = [
 		null,
 		null,
 	]
-	private jfaOrganismTextures: [GPUTexture | null, GPUTexture | null] = [
+	jfaOrganismTextures: [GPUTexture | null, GPUTexture | null] = [
 		null,
 		null,
 	]
-	private jfaComputePipeline: GPUComputePipeline | null = null
-	private jfaComputeBindGroupLayout: GPUBindGroupLayout | null = null
-	private jfaParamsBuffers: GPUBuffer[] = []
-	private jfaOrganelleBindGroups: [GPUBindGroup[], GPUBindGroup[]] = [[], []]
-	private jfaOrganismBindGroups: [GPUBindGroup[], GPUBindGroup[]] = [[], []]
-	private jfaPassCount = 0
-	private jfaOrganelleEdgeBindGroups: [
+	jfaComputePipeline: GPUComputePipeline | null = null
+	jfaComputeBindGroupLayout: GPUBindGroupLayout | null = null
+	jfaParamsBuffers: GPUBuffer[] = []
+	jfaOrganelleBindGroups: [GPUBindGroup[], GPUBindGroup[]] = [[], []]
+	jfaOrganismBindGroups: [GPUBindGroup[], GPUBindGroup[]] = [[], []]
+	jfaPassCount = 0
+	jfaOrganelleEdgeBindGroups: [
 		GPUBindGroup | null,
 		GPUBindGroup | null,
 	] = [null, null]
-	private jfaOrganismEdgeBindGroups: [
+	jfaOrganismEdgeBindGroups: [
 		GPUBindGroup | null,
 		GPUBindGroup | null,
 	] = [null, null]
-	private jfaEdgeBindGroupLayout: GPUBindGroupLayout | null = null
-	private jfaOrganelleEdgePipeline: GPURenderPipeline | null = null
-	private jfaOrganismEdgePipeline: GPURenderPipeline | null = null
-	private jfaOrganelleSeedPipeline: GPURenderPipeline | null = null
-	private jfaOrganismSeedPipeline: GPURenderPipeline | null = null
-	private jfaOrganismCentroidSeedPipeline: GPURenderPipeline | null = null
-	private jfaOrganismLineSeedPipeline: GPURenderPipeline | null = null
-	private bubbleParamsBuffer: GPUBuffer | null = null
-	private bubbleThreshold = 5
-	private bubbleEdgeWidth = 3
+	jfaEdgeBindGroupLayout: GPUBindGroupLayout | null = null
+	jfaOrganelleEdgePipeline: GPURenderPipeline | null = null
+	jfaOrganismEdgePipeline: GPURenderPipeline | null = null
+	jfaOrganelleSeedPipeline: GPURenderPipeline | null = null
+	jfaOrganismSeedPipeline: GPURenderPipeline | null = null
+	jfaOrganismCentroidSeedPipeline: GPURenderPipeline | null = null
+	jfaOrganismLineSeedPipeline: GPURenderPipeline | null = null
+	bubbleParamsBuffer: GPUBuffer | null = null
+	bubbleThreshold = 5
+	bubbleEdgeWidth = 3
 
 	// Organism centroid circle overlay
-	private organismCentroidPipeline: GPURenderPipeline | null = null
-	private organismCentroidBindGroupLayout: GPUBindGroupLayout | null = null
-	private organismCentroidBindGroup: GPUBindGroup | null = null
-	private organismCentroidBuffer: GPUBuffer | null = null
-	private organismCentroidParamsBuffer: GPUBuffer | null = null
-	private organismCentroidCount = 0
-	private organismCentroidSnapshot: {
+	organismCentroidPipeline: GPURenderPipeline | null = null
+	organismCentroidBindGroupLayout: GPUBindGroupLayout | null = null
+	organismCentroidBindGroup: GPUBindGroup | null = null
+	organismCentroidBuffer: GPUBuffer | null = null
+	organismCentroidParamsBuffer: GPUBuffer | null = null
+	organismCentroidCount = 0
+	organismCentroidSnapshot: {
 		cx: number
 		cy: number
 		vx: number
 		vy: number
 		id: number
 	}[] = []
-	private organismCentroidSnapshotTime = 0
+	organismCentroidSnapshotTime = 0
 
 	// Organism connection lines (edges between organelle centroids in same organism)
-	private organismLinePipeline: GPURenderPipeline | null = null
-	private organismLineFillPipeline: GPURenderPipeline | null = null
-	private organismLineBuffer: GPUBuffer | null = null
-	private organismLineBindGroup: GPUBindGroup | null = null
-	private organismLineCount = 0
-	private organismLineEdges: [number, number][] = [] // pairs of indices into centroid snapshot
+	organismLinePipeline: GPURenderPipeline | null = null
+	organismLineFillPipeline: GPURenderPipeline | null = null
+	organismLineBuffer: GPUBuffer | null = null
+	organismLineBindGroup: GPUBindGroup | null = null
+	organismLineCount = 0
+	organismLineEdges: [number, number][] = [] // pairs of indices into centroid snapshot
 
 	// Fill-variant pipeline for centroid circles (writes organism ID to r8uint)
-	private organismCentroidFillPipeline: GPURenderPipeline | null = null
+	organismCentroidFillPipeline: GPURenderPipeline | null = null
 
 	// Organism-level centroid circles (larger, wrapping organelle centroids)
-	private osmLevelCentroidPipeline: GPURenderPipeline | null = null
-	private osmLevelCentroidBindGroup: GPUBindGroup | null = null
-	private osmLevelCentroidBuffer: GPUBuffer | null = null
-	private osmLevelCentroidCount = 0
-	private osmLevelCentroidSnapshot: {
+	osmLevelCentroidPipeline: GPURenderPipeline | null = null
+	osmLevelCentroidBindGroup: GPUBindGroup | null = null
+	osmLevelCentroidBuffer: GPUBuffer | null = null
+	osmLevelCentroidCount = 0
+	osmLevelCentroidSnapshot: {
 		cx: number
 		cy: number
 		vx: number
 		vy: number
 		id: number
 	}[] = []
-	private osmLevelCentroidSnapshotTime = 0
+	osmLevelCentroidSnapshotTime = 0
 
 	// Quad (fullscreen normalization) pipeline
-	private quadPipeline: GPURenderPipeline | null = null
-	private quadBindGroupLayout: GPUBindGroupLayout | null = null
-	private quadBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
+	quadPipeline: GPURenderPipeline | null = null
+	quadBindGroupLayout: GPUBindGroupLayout | null = null
+	quadBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
 		null,
 		null,
 	]
-	private quadParamsBuffer: GPUBuffer | null = null
-	private offscreenTexture: GPUTexture | null = null
-	private offscreenView: GPUTextureView | null = null
-	private offscreenSampler: GPUSampler | null = null
+	quadParamsBuffer: GPUBuffer | null = null
+	offscreenTexture: GPUTexture | null = null
+	offscreenView: GPUTextureView | null = null
+	offscreenSampler: GPUSampler | null = null
 
 	// Stain (phosphor persistence) — ping-pong pair
-	private stainTextures: [GPUTexture | null, GPUTexture | null] = [null, null]
-	private stainViews: [GPUTextureView | null, GPUTextureView | null] = [null, null]
-	private stainPingPong = 0
-	private stainPipeline: GPURenderPipeline | null = null
-	private stainBindGroupLayout: GPUBindGroupLayout | null = null
-	private stainBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [null, null]
-	private stainParamsBuffer: GPUBuffer | null = null
+	stainTextures: [GPUTexture | null, GPUTexture | null] = [null, null]
+	stainViews: [GPUTextureView | null, GPUTextureView | null] = [
+		null,
+		null,
+	]
+	stainPingPong = 0
+	stainPipeline: GPURenderPipeline | null = null
+	stainBindGroupLayout: GPUBindGroupLayout | null = null
+	stainBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
+		null,
+		null,
+	]
+	stainParamsBuffer: GPUBuffer | null = null
 
 	// Simulation state (CPU-side, for UI and buffer uploads)
-	private count = 500
-	private width = 0
-	private height = 0
-	private particles: CustomParticle[] = []
-	private nextGroupId = 0
-	private groupNames = new Map<string, string>()
-	private groupColors = new Map<string, [number, number, number]>()
-	private showCircleOverlay = false
-	private prevVelX: Float32Array | null = null // previous-frame per-particle vx
-	private prevVelY: Float32Array | null = null // previous-frame per-particle vy
-	private pointSize = 27.0
-	private pulseScale = 6
-	private curveEditor: CurveEditor | null = null
-	private envelopeEditor: EnvelopeEditor | null = null
+	count = 500
+	width = 0
+	height = 0
+	particles: CustomParticle[] = []
+	nextGroupId = 0
+	groupNames = new Map<string, string>()
+	groupColors = new Map<string, [number, number, number]>()
+	showCircleOverlay = false
+	prevVelX: Float32Array | null = null // previous-frame per-particle vx
+	prevVelY: Float32Array | null = null // previous-frame per-particle vy
+	pointSize = 27.0
+	pulseScale = 6
+	curveEditor: CurveEditor | null = null
 
 	// Per-effect shader params (effectId → [param0, param1, ...])
-	private particleEffectParams: Record<string, number[]> = {
+	particleEffectParams: Record<string, number[]> = {
 		gradient: [1.1, 0, 0, 0],
 		solid: [1, 0.4, 0, 0],
 		"speed-color": [0.66, 0.5, 0, 0],
 		"stress-color": [1, 0.65, 0, 0],
 	}
-	private postEffectParams: Record<string, number[]> = {
+	postEffectParams: Record<string, number[]> = {
 		normalize: [0.6, 0.8, 0, 0],
 		chromatic: [0.6, 0.8, 0.009, 0],
 		crt: [0.6, 0.8, 0.15, 800],
@@ -371,199 +355,153 @@ export class RandomDots implements Simulation {
 	}
 
 	// Force matrix (single source of truth for inter-type forces)
-	private forceMatrix: ForceMatrix = {}
-	private affectRadius = 61.1
-	private forceRepelDistance = 40.72
-	private baseStrength = 207.94
+	forceMatrix: ForceMatrix = {}
+	affectRadius = 61.1
+	forceRepelDistance = 40.72
+	baseStrength = 207.94
 
 	// Density regulation (user-facing controls)
-	private crowdLimit = 29.06
-	private spread = 26 // 0–100%
-	private maxSpeedPct = 100 // 1–100%, soft speed limiter
+	crowdLimit = 29.06
+	spread = 26 // 0–100%
+	maxSpeedPct = 100 // 1–100%, soft speed limiter
 
 	// Universal repulsion between all particles
-	private repelStrength = 147.61
+	repelStrength = 147.61
 
 	// Scale: spatial zoom multiplier (1 = default, 2 = everything twice as large)
-	private scale = 0.5
+	scale = 0.5
 
 	// Auto-balance: derive physics params from force matrix + particle counts
-	private autoBalanceEnabled = true
+	autoBalanceEnabled = true
 
 	// Accumulated time for animated shaders
-	private time = 0
+	time = 0
 
 	// Active shader effects (one per category)
-	private activeParticleEffect: ShaderEffect = particleEffects[0]
-	private activePostEffect: ShaderEffect = findPostEffect("metaball")
+	activeParticleEffect: ShaderEffect = particleEffects[0]
+	activePostEffect: ShaderEffect = findPostEffect("metaball")
 
 	// Callbacks for shader menu sync
 	onParticleEffectChanged: ((id: string) => void) | null = null
 	onPostEffectChanged: ((id: string) => void) | null = null
 
 	// Hidden inputs for settings persistence
-	private _hiddenParticleEffect: HTMLInputElement | null = null
-	private _hiddenPostEffect: HTMLInputElement | null = null
-	private _hiddenParticleParams: HTMLInputElement | null = null
-	private _hiddenPostParams: HTMLInputElement | null = null
+	_hiddenParticleEffect: HTMLInputElement | null = null
+	_hiddenPostEffect: HTMLInputElement | null = null
+	_hiddenParticleParams: HTMLInputElement | null = null
+	_hiddenPostParams: HTMLInputElement | null = null
 
 	// Mouse interaction state
-	private mouseX = 0
-	private mouseY = 0
-	private mouseLeft = false
-	private mouseRight = false
-	private mouseForceRadius = 200
-	private mouseForceStrength = 5000
-	private boundMouseMove: ((e: MouseEvent) => void) | null = null
-	private boundMouseDown: ((e: MouseEvent) => void) | null = null
-	private boundMouseUp: ((e: MouseEvent) => void) | null = null
-	private boundContextMenu: ((e: MouseEvent) => void) | null = null
+	mouseX = 0
+	mouseY = 0
+	mouseLeft = false
+	mouseRight = false
+	mouseForceRadius = 200
+	mouseForceStrength = 5000
+	boundMouseMove: ((e: MouseEvent) => void) | null = null
+	boundMouseDown: ((e: MouseEvent) => void) | null = null
+	boundMouseUp: ((e: MouseEvent) => void) | null = null
+	boundContextMenu: ((e: MouseEvent) => void) | null = null
 
 	// Slider references for auto-balance sync
-	private _affectRadiusInput: HTMLElement | null = null
-	private _forceRepelDistanceInput: HTMLElement | null = null
-	private _baseStrengthInput: HTMLElement | null = null
-	private _repelStrengthInput: HTMLElement | null = null
-	private _crowdLimitInput: HTMLElement | null = null
-	private _spreadInput: HTMLElement | null = null
-	private _autoBalanceSummary: HTMLElement | null = null
+	_affectRadiusInput: HTMLElement | null = null
+	_forceRepelDistanceInput: HTMLElement | null = null
+	_baseStrengthInput: HTMLElement | null = null
+	_repelStrengthInput: HTMLElement | null = null
+	_crowdLimitInput: HTMLElement | null = null
+	_spreadInput: HTMLElement | null = null
+	_autoBalanceSummary: HTMLElement | null = null
 
 	// Skeuomorphic widget references (updated in update loop)
-	private _volumeVu: VuMeter | null = null
-	private _forceStrengthVu: VuMeter | null = null
-	private _repelStrengthVu: VuMeter | null = null
-	private _bpmGauge: MiniGauge | null = null
-	private _spreadGauge: MiniGauge | null = null
-	private _stabilityBars: StabilityBars | null = null
-	private _latchClock: MiniClock | null = null
-	private _phaseClock: MiniClock | null = null
+	_volumeVu: VuMeter | null = null
+	_forceStrengthVu: VuMeter | null = null
+	_repelStrengthVu: VuMeter | null = null
+	_spreadGauge: MiniGauge | null = null
 
 	// DOM refs for auto-randomize UI sync from update loop
-	private _matrixWrapper: HTMLElement | null = null
-	private _matrixContainer: HTMLElement | null = null
-	private _matrixRootContainer: HTMLElement | null = null
-	private _particlesContainer: HTMLElement | null = null
+	_matrixWrapper: HTMLElement | null = null
+	_matrixContainer: HTMLElement | null = null
+	_matrixRootContainer: HTMLElement | null = null
+	_particlesContainer: HTMLElement | null = null
 
 	// Dirty flags — avoid re-uploading every frame
-	private forceMatrixDirty = true
-	private particleBufferDirty = true
+	forceMatrixDirty = true
+	particleBufferDirty = true
 
-	// Music engine (bar-boundary architecture)
-	/** Min organism age (fraction of a bar) to qualify for play — shared by
-	 *  the scheduler config and the cycle's species-eligibility filter. */
-	private static readonly QUALIFICATION_FRACTION = 0.5
-	private audioGraph = new AudioGraph()
-	private musicState: MusicState | null = null
-	private musicBarNumber = -1
-	private tSoundStart = 0
-	private scheduleWorker: Worker | null = null
-	private scheduleWorkerReqId = 0
-	private pendingBarRequest = false
-	private _lastBlockLog = 0
-	private musicBpm = 90
-	private musicTimeMultiplier = 1
-	/** How many bars each computed melody plays before the next is calculated. */
-	private barsPerMelody = 2
-	/** 0-based index of the current bar within its melody repeat group. */
-	private barRepeatIndex = 0
-	private overtonePhaseRate = 1
-	private preferNiceModes = false
-	private rootStrategy: RootStrategy = "table"
-	private organismCycle: OrganismCycle = createInitialCycle()
-	private supremacyState: SupremacyState = createInitialSupremacy()
-	private autoRandomizeMatrixEnabled = true
-	private autoRandomizeCountsEnabled = true
-	private cyclesBeforeRandomize = 3
-	private fallbackBars = 8
-	private fallbackEnabled = true
-	private prevCycleNumber = 0
-	private voiceBudget = 32
-	private playTimeCtx: PlayTimeContext | null = null
-	/** Cache of last-known playback params so notes still play if an organism/organelle disappears mid-bar. */
-	private playbackParamsCache = new Map<string, PlaybackParams>()
-	/** Persistent worker message listener for streaming bar results. */
-	private workerMsgHandler: ((e: MessageEvent) => void) | null = null
-	/** Bar-meta from the current streaming bar (set on bar-meta, used for music state). */
-	private pendingBarMeta: ScheduleWorkerBarMeta | null = null
-	private latestGlobalMetrics: GlobalMetrics | null = null
-	private mutedOrganisms = new Set<string>()
-	private readbackBuffer: GPUBuffer | null = null
-	private readbackPending = false
-	private frameCounter = 0
+	// Music engine — organelle-driven, no grid, no schedule
+	music = new MusicEngine()
+	/** Live radius-pulse state, keyed by typeId. Populated when
+	 *  MusicEngine.tick reports a formation event; consumed by
+	 *  uploadRadiusScales each frame. */
+	activeMusicPulses = new Map<
+		number,
+		{
+			readonly startTime: number
+			readonly duration: number
+			readonly particleIndices: Uint32Array
+		}
+	>()
+	mutedOrganisms = new Set<string>()
+	readbackBuffer: GPUBuffer | null = null
+	readbackPending = false
+	frameCounter = 0
 
 	// Detection (offloaded to worker)
-	private detectionState: DetectionFrame | null = null
-	private detectionConfig: DetectionConfig = { ...DEFAULT_DETECTION_CONFIG }
-	private detectionWorker: Worker | null = null
-	private detectionMsgId = 0
-	private detectionWorkerBusy = false
+	detectionState: DetectionFrame | null = null
+	detectionConfig: DetectionConfig = { ...DEFAULT_DETECTION_CONFIG }
+	detectionWorker: Worker | null = null
+	detectionMsgId = 0
+	detectionWorkerBusy = false
 	/** Serialized prev frame kept in sync for the worker. */
-	private prevFrameWire: DetectionFrameWire | null = null
+	prevFrameWire: DetectionFrameWire | null = null
 	/** Last particle count from readback, used by worker response for overlay upload. */
-	private lastParticleCount = 0
+	lastParticleCount = 0
 
 	// Organism registry (stable identity across frames)
-	private organismRegistry: OrganismRegistry | null = null
-	private lastReadbackTime = 0
-	private ledgerToggle: HTMLElement | null = null
-	private ledgerPanels: HTMLElement | null = null
-	private ledgerBackdrop: HTMLElement | null = null
-	private ledgerOrganellesEl: HTMLElement | null = null
-	private ledgerOrganismsEl: HTMLElement | null = null
-	private organelleRows = new Map<
+	organismRegistry: OrganismRegistry | null = null
+	lastReadbackTime = 0
+	ledgerToggle: HTMLElement | null = null
+	ledgerPanels: HTMLElement | null = null
+	ledgerBackdrop: HTMLElement | null = null
+	ledgerOrganellesEl: HTMLElement | null = null
+	ledgerOrganismsEl: HTMLElement | null = null
+	organelleRows = new Map<
 		number,
 		{ row: HTMLElement; countEl: HTMLElement }
 	>()
-	private organismRows = new Map<
+	organismRows = new Map<
 		string,
 		{ row: HTMLElement; countEl: HTMLElement; muteBtn: HTMLElement }
 	>()
-	private organelleHeading: HTMLElement | null = null
-	private organismHeading: HTMLElement | null = null
-	private unmuteAllBtn: HTMLElement | null = null
-	private showOrganelleOverlay = false
-	private showOrganismOverlay = false
-	private showOrganismCentroids = false
-	private organismDepthRanks = new Map<number, number>() // osmId (1-based) → depth rank
-	private organismDepthTexture: GPUTexture | null = null
-	private organismPrediction: OrganismPrediction | null = null
-	private predictionDirty = true
-	private ledgerPredictionsEl: HTMLElement | null = null
-	private predictionHeading: HTMLElement | null = null
-	private predictionRows = new Map<
+	organelleHeading: HTMLElement | null = null
+	organismHeading: HTMLElement | null = null
+	unmuteAllBtn: HTMLElement | null = null
+	showOrganelleOverlay = false
+	showOrganismOverlay = false
+	showOrganismCentroids = false
+	organismDepthRanks = new Map<number, number>() // osmId (1-based) → depth rank
+	organismDepthTexture: GPUTexture | null = null
+	organismPrediction: OrganismPrediction | null = null
+	predictionDirty = true
+	ledgerPredictionsEl: HTMLElement | null = null
+	predictionHeading: HTMLElement | null = null
+	predictionRows = new Map<
 		string,
 		{ row: HTMLElement; scoreEl: HTMLElement }
 	>()
-	private speciesPresence = new Map<string, number>() // sig → presence score [0,1]
-	private speciesBrightness = new Map<string, number>() // sig → visual brightness [0,1]
-	private speciesDecayThreshold = 0.05
-	private speciesDecaySlider: HTMLInputElement | null = null
-	private lastPredictionTime = 0
-	private detectionBuffer: GPUBuffer | null = null
-	private radiusScaleBuffer: GPUBuffer | null = null
-
-	// Active organelle pulses: key = "organismId:typeId:beatIndex"
-	// particleIndices snapshotted at trigger time so detection changes don't reset the pulse
-	private activePulses = new Map<
-		string,
-		{
-			startTime: number
-			duration: number
-			particleIndices: Uint32Array
-			attackFrac: number // fraction of duration for attack
-			decayFrac: number // fraction of duration for decay
-			sustainFrac: number // fraction of duration for sustain hold
-			peakLevel: number
-			sustainLevel: number
-			envelopeLut: Float32Array | null // manual envelope LUT, overrides ADSR
-		}
-	>()
+	speciesPresence = new Map<string, number>() // sig → presence score [0,1]
+	speciesBrightness = new Map<string, number>() // sig → visual brightness [0,1]
+	speciesDecayThreshold = 0.05
+	speciesDecaySlider: HTMLInputElement | null = null
+	lastPredictionTime = 0
+	detectionBuffer: GPUBuffer | null = null
+	radiusScaleBuffer: GPUBuffer | null = null
 
 	/* ================================================================ */
 	/*  effective params — base values × scale                           */
 	/* ================================================================ */
 
-	private getEffectiveParams() {
+	getEffectiveParams() {
 		const s = this.scale
 		return {
 			affectRadius: this.affectRadius * s,
@@ -578,7 +516,7 @@ export class RandomDots implements Simulation {
 		}
 	}
 
-	private syncAutoBalanceSliders() {
+	syncAutoBalanceSliders() {
 		const pairs: [HTMLElement | null, number][] = [
 			[this._affectRadiusInput, this.affectRadius],
 			[this._forceRepelDistanceInput, this.forceRepelDistance],
@@ -597,7 +535,7 @@ export class RandomDots implements Simulation {
 		this.renderAutoBalanceSummary()
 	}
 
-	private renderAutoBalanceSummary() {
+	renderAutoBalanceSummary() {
 		const el = this._autoBalanceSummary
 		if (!el) return
 		const items: [string, number][] = [
@@ -623,7 +561,8 @@ export class RandomDots implements Simulation {
 	setup(gpu: GpuContext, width: number, height: number) {
 		this.cleanup()
 		this.initEffectParams()
-		this.audioGraph = new AudioGraph()
+		this.music = new MusicEngine()
+		this.music.onRandomizeRequest = () => this.randomizeForceMatrixAndCounts()
 		this.device = gpu.device
 		this.canvas = gpu.canvas
 		this.canvasContext = gpu.canvasContext
@@ -981,392 +920,25 @@ export class RandomDots implements Simulation {
 		// Swap ping-pong
 		this.pingPong = 1 - this.pingPong
 
-		// Bar-boundary music scheduling — streaming Web Worker pattern.
-		// The worker streams bar-meta, per-organism slot-fills, and done.
-		// The main thread fills a tuplet grid; the scrubber plays notes
-		// just-in-time, resolving playback params from live sim state.
-		if (this.audioGraph.isEnabled) {
-			const barDur = barDuration(
-				this.musicBpm,
-				this.musicTimeMultiplier,
-			)
-			const now = this.audioGraph.currentTime
-
-			// Wide enough that the worker round-trip comfortably beats the
-			// scrubber's JIT lookahead; the double-buffered grid keeps the
-			// current bar playing meanwhile.
-			const WORKER_LOOKAHEAD = 0.350
-			const nextBar = this.musicBarNumber + 1
-			const nextBarStart = barStartTimeFn(this.tSoundStart, nextBar, barDur)
-
-			const _timeReady = now + WORKER_LOOKAHEAD >= nextBarStart
-			if (_timeReady && (this.pendingBarRequest || !this.detectionState || !this.latestGlobalMetrics)) {
-				if (!this._lastBlockLog || now - this._lastBlockLog > 1) {
-					this._lastBlockLog = now
-					console.warn(`⏳ Bar ${nextBar} NOT scheduled: pending=${this.pendingBarRequest} detection=${!!this.detectionState} metrics=${!!this.latestGlobalMetrics}`)
+		// Organelle-driven music: each frame, ask the engine to observe the
+		// current organelle set and re-attack any voice whose type has a new
+		// formation. Formation events are returned so the radius pulses on
+		// the associated particles can stay in sync with the audio.
+		if (this.music.isEnabled && this.detectionState) {
+			const formations = this.music.tick(this.detectionState.organelles)
+			if (formations.length > 0) {
+				const now = performance.now() / 1000
+				for (const f of formations) {
+					this.activeMusicPulses.set(f.typeId, {
+						startTime: now,
+						duration: f.sustainSec,
+						particleIndices: f.particleIndices,
+					})
 				}
 			}
-
-			// Melody hold: replay the current computed bar for `barsPerMelody`
-			// bars before calculating a new one. The organism cycle, chord
-			// degree, drone, and note grid all hold still during repeat bars,
-			// so the melody stays consistent — only live expression (volume,
-			// pan, envelope) keeps tracking the simulation.
-			const wantRepeatBar =
-				_timeReady
-				&& !this.pendingBarRequest
-				&& this.detectionState
-				&& this.latestGlobalMetrics
-				&& this.barRepeatIndex + 1 < this.barsPerMelody
-
-			if (wantRepeatBar && this.audioGraph.repeatGrid(nextBarStart, barDur)) {
-				this.musicBarNumber = nextBar
-				this.barRepeatIndex++
-				console.log(`🔁 Bar ${nextBar} holds melody (${this.barRepeatIndex + 1}/${this.barsPerMelody})`)
-			} else if (
-				_timeReady
-				&& !this.pendingBarRequest
-				&& this.detectionState
-				&& this.latestGlobalMetrics
-			) {
-				this.barRepeatIndex = 0
-				this.musicBarNumber = nextBar
-				this.pendingBarRequest = true
-
-				// Build snapshot (cheap — reads existing detection state)
-				const snapshot = this.buildBarSnapshot(nextBarStart, barDur, nextBar)
-
-				const config: ScheduleConfig = {
-					barsPerPhase: this.overtonePhaseRate,
-					qualificationFraction: RandomDots.QUALIFICATION_FRACTION,
-					preferNiceModes: this.preferNiceModes,
-				}
-
-				// Capture values needed by the response handler
-				const barStart = nextBarStart
-				const reqBarDur = barDur
-				const reqBarNumber = nextBar
-
-				// ── Debug: bar scheduling overview ──
-				console.group(`🎵 Bar ${nextBar} scheduled`)
-				console.log(`  BPM: ${this.musicBpm} | timeMultiplier: ${this.musicTimeMultiplier} | barDur: ${barDur.toFixed(3)}s`)
-				console.log(`  barStart: ${barStart.toFixed(3)}s | now: ${now.toFixed(3)}s | lookahead: ${WORKER_LOOKAHEAD}s`)
-				console.log(`  organisms: ${snapshot.organisms.length} | activeSpecies: ${snapshot.activeSpecies ?? "ALL"}`)
-				console.log(`  rootOverride: ${snapshot.rootOverride} | preferNiceModes: ${this.preferNiceModes}`)
-				console.log(`  organismCycle: idx=${this.organismCycle.currentIndex} cycle#=${this.organismCycle.cycleNumber} visited=${[...this.organismCycle.visitedSpecies].join(",")||"none"}`)
-				if (snapshot.organisms.length === 0) {
-					console.warn(`  ⚠️ NO ORGANISMS — only drone will play, no notes scheduled`)
-				} else {
-					for (const org of snapshot.organisms) {
-						const types = [...org.composition.entries()].map(([t, c]) => `type${t}×${c}`).join(", ")
-						const isActive = snapshot.activeSpecies == null || org.colorSignature === snapshot.activeSpecies
-						console.log(`  organism ${org.registryId} [${org.colorSignature.slice(0,12)}] ${isActive ? "✓active" : "✗filtered"} | organelles: ${org.organelles.length} (${types}) | age: ${((barStart - org.creationTime) / barDur).toFixed(1)} bars`)
-					}
-				}
-				console.groupEnd()
-
-				const worker = this.ensureScheduleWorker()
-				const reqId = ++this.scheduleWorkerReqId
-
-				// Allocate fresh grid for this bar (the current bar's grid keeps
-				// playing — grids are double-buffered). The params cache persists
-				// across bars so flickering species keep their last-known sound.
-				this.audioGraph.initGrid(barStart, reqBarDur)
-
-				const req: ScheduleWorkerRequest = {
-					id: reqId,
-					snapshot: serializeBarSnapshot(snapshot),
-					barNumber: reqBarNumber,
-					barStartTime: barStart,
-					barDur: reqBarDur,
-					prevState: serializeMusicState(this.musicState),
-					config,
-				}
-
-				worker.postMessage(req)
-
-				// Remove old handler if any
-				if (this.workerMsgHandler) {
-					worker.removeEventListener("message", this.workerMsgHandler)
-				}
-
-				// Persistent streaming handler for this bar
-				this.workerMsgHandler = (e: MessageEvent<ScheduleWorkerMsgWire>) => {
-					const msg = e.data
-					if (!("kind" in msg) || msg.id !== reqId) return
-
-					switch (msg.kind) {
-						case "bar-meta": {
-							const meta = deserializeBarMeta(msg as BarMetaWire)
-							this.pendingBarMeta = meta
-
-							// ── Debug: bar-meta from worker ──
-							console.group(`🎶 Bar ${reqBarNumber} meta received`)
-							console.log(`  mode: ${meta.mode.name} | root: ${meta.rootMidi} (${["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][meta.rootMidi % 12]}) | stability: ${meta.netStability.toFixed(3)}`)
-							console.log(`  isBufferBar: ${meta.isBufferBar} | bufferChord: ${meta.bufferChord ? "yes" : "none"}`)
-							console.log(`  scale semitones: [${meta.mode.scaleSemitones.join(",")}]`)
-							console.log(`  spatialEntropy: ${meta.spatialEntropy.toFixed(3)}`)
-							if (snapshot.organisms.length === 0) {
-								console.warn(`  ⚠️ 0 organisms — matrix pad only this bar`)
-							}
-							console.groupEnd()
-
-							// Set reverb from entropy
-							this.audioGraph.setReverbFromEntropy(meta.spatialEntropy, barStart)
-
-							// Particle chorus drones — the full frequency range subdivided
-							// by the particle population, clustered on this bar's chord
-							// with micro-detune, bass-weighted, always on
-							this.audioGraph.updateDronePad(
-								computeDroneVoices(
-									this.particles.length,
-									meta.chordPitchClasses,
-								),
-								barStart,
-							)
-
-							// Update music state
-							this.musicState = {
-								currentBarNumber: reqBarNumber,
-								currentMode: meta.mode,
-								currentRootMidi: meta.rootMidi,
-								netStability: meta.netStability,
-								isBufferBar: meta.isBufferBar,
-								bufferChord: meta.bufferChord,
-								envelopeRanges: meta.envelopeRanges,
-								speciesCycle: meta.speciesCycle,
-								organismCycleNumber: this.organismCycle.cycleNumber,
-							}
-
-							// Supremacy-based auto-randomize
-							const cycleCompleted = this.organismCycle.cycleNumber > this.prevCycleNumber
-							this.prevCycleNumber = this.organismCycle.cycleNumber
-							this.supremacyState = updateSupremacy(
-								this.supremacyState, snapshot.organisms, cycleCompleted,
-							)
-							const shouldRand = shouldRandomize(this.supremacyState, {
-								cyclesBeforeRandomize: this.cyclesBeforeRandomize,
-								fallbackBars: this.fallbackBars,
-								fallbackEnabled: this.fallbackEnabled,
-							})
-							if (shouldRand) {
-								// Cached playback params embody the old regime's matrix
-								// (waveform, volume, pan) — recurring signatures in the
-								// new regime must not replay them
-								this.playbackParamsCache.clear()
-								if (this.autoRandomizeMatrixEnabled) {
-									const arTypes = this.getTypeIds()
-									this.forceMatrix = randomizeMatrix(arTypes)
-									this.forceMatrixDirty = true
-									this.speciesPresence.clear()
-									this.speciesBrightness.clear()
-									if (this._matrixWrapper)
-										this.syncMatrixUI(this._matrixWrapper, arTypes)
-									if (this._matrixContainer)
-										this.syncMatrixHidden(this._matrixContainer)
-									if (this._matrixRootContainer) {
-										this._matrixRootContainer.dispatchEvent(
-											new Event("change", { bubbles: true }),
-										)
-									}
-								}
-								if (this.autoRandomizeCountsEnabled) {
-									this.randomizeCounts()
-								}
-								this.supremacyState = resetSupremacy()
-							}
-							break
-						}
-
-						case "slot-fill": {
-							this.audioGraph.fillSlot(msg.tierIndex, msg.slotIndex, msg.notes)
-							// Pre-warm the params cache so a note whose species flickers
-							// out at play time still has a fallback on its first play
-							if (this.playTimeCtx) {
-								for (const n of msg.notes) {
-									const key = `${n.speciesSignature}:${n.typeId}:${n.subdivisionIndex}`
-									const params = computePlaybackParams(n, this.playTimeCtx)
-									if (params) this.playbackParamsCache.set(key, params)
-								}
-							}
-							for (const n of msg.notes) {
-								console.log(`  📥 slot-fill tier=${msg.tierIndex} slot=${msg.slotIndex} midi=${n.midiNote} species=${n.speciesSignature.slice(0,12)} type=${n.typeId}`)
-							}
-							break
-						}
-
-						case "done": {
-							this.pendingBarRequest = false
-							// Count total notes in the grid
-							const grid = this.audioGraph.getGrid()
-							let totalNotes = 0
-							if (grid) {
-								for (const tier of grid.tiers) {
-									for (const slot of tier) {
-										if (slot) totalNotes += slot.length
-									}
-								}
-							}
-							console.log(`🏁 Bar ${reqBarNumber} done — ${totalNotes} notes in grid`)
-							if (totalNotes === 0) {
-								console.warn(`  ⚠️ Grid is EMPTY — no notes will play this bar!`)
-							}
-							break
-						}
-					}
-				}
-
-				worker.addEventListener("message", this.workerMsgHandler)
-			}
-
-			// Build play-time context from live state (for grid scrubber)
-			if (this.organismRegistry && this.detectionState && this.musicState?.envelopeRanges && this.canvas) {
-				this.playTimeCtx = buildPlayTimeContext(
-					this.organismRegistry,
-					this.detectionState,
-					this.detectionConfig.proximityRadius || 18,
-					this.musicState.envelopeRanges,
-					this.forceMatrix,
-					this.getTypeIds(),
-					this.canvas.width,
-					barDur,
-					barStartTimeFn(this.tSoundStart, this.musicBarNumber, barDur),
-				)
-			}
-
-			// Grid-based just-in-time AudioNode creation + visual pulses
-			if (this.playTimeCtx) {
-				const ptCtx = this.playTimeCtx
-				const cache = this.playbackParamsCache
-				const barNum = this.musicBarNumber
-				const audioNow = this.audioGraph.currentTime
-				const perfNow = performance.now() / 1000
-				const manualShape = this.envelopeEditor?.getShape() ?? null
-				const pScale = this.getEffectiveParams().pulseScale
-
-				this.audioGraph.tickGridScheduler(
-					(note: SlotNote) => {
-						const key = `${note.speciesSignature}:${note.typeId}:${note.subdivisionIndex}`
-						const params = computePlaybackParams(note, ptCtx)
-						if (params) {
-							cache.set(key, params)
-							console.log(`  ▶ PLAY midi=${note.midiNote} species=${note.speciesSignature.slice(0,12)} type=${note.typeId} vol=${params.volume.toFixed(3)} gate=${params.gateDuration.toFixed(3)}s pan=${params.pan.toFixed(2)}`)
-							return params
-						}
-						// Species disappeared — use last known params
-						const cached = cache.get(key) ?? null
-						if (!cached) {
-							console.warn(`  ✗ SKIP midi=${note.midiNote} species=${note.speciesSignature.slice(0,12)} type=${note.typeId} — species dead, no cache`)
-						} else {
-							console.log(`  ▶ PLAY (cached) midi=${note.midiNote} species=${note.speciesSignature.slice(0,12)} type=${note.typeId}`)
-						}
-						return cached
-					},
-					// Visual pulse callback — fires when a note is actually played
-					(note, params, time) => {
-						if (pScale <= 0) return
-						const particles = this.snapshotPulseParticles(
-							note.speciesSignature,
-							note.typeId,
-							note.subdivisionIndex,
-						)
-						if (!particles) return
-
-						const perfStart = perfNow + (time - audioNow)
-						const key = `${note.speciesSignature}:${note.typeId}:${note.subdivisionIndex}:${barNum}`
-
-						// Gate-aware timing from resolved params
-						let atkDur = params.envelope.attackDuration
-						let decDur = params.envelope.decayDuration
-						const gateDur = params.gateDuration
-						if (gateDur < atkDur + decDur) {
-							const ratio = gateDur / (atkDur + decDur)
-							atkDur *= ratio
-							decDur *= ratio
-						}
-						const susDur = Math.max(0, gateDur - atkDur - decDur)
-						const relDur = params.envelope.releaseDuration
-						const totalDur = atkDur + decDur + susDur + relDur
-
-						this.activePulses.set(key, {
-							startTime: perfStart,
-							duration: totalDur,
-							particleIndices: particles,
-							attackFrac: atkDur / totalDur,
-							decayFrac: decDur / totalDur,
-							sustainFrac: susDur / totalDur,
-							peakLevel: params.envelope.peakLevel,
-							sustainLevel: params.envelope.sustainLevel,
-							envelopeLut: manualShape
-								? buildGateAwareLUT(manualShape, atkDur, decDur, susDur, relDur, 128)
-								: null,
-						})
-					},
-				)
-			}
-
 		}
 
-		// Bar visualizer (runs every frame for smooth scrubber — only when sound is on)
-		if (this.audioGraph.isEnabled) {
-			const bvBarDur = barDuration(
-				this.musicBpm,
-				this.musicTimeMultiplier,
-			)
-			const bvNow = this.audioGraph.currentTime
-			const bvVisualBar = currentBarNumberFn(this.tSoundStart, bvNow, bvBarDur)
-			const bvBarStart = barStartTimeFn(
-				this.tSoundStart,
-				bvVisualBar,
-				bvBarDur,
-			)
-			const meta = this.pendingBarMeta
-			updateBarVisualizer({
-				grid: this.audioGraph.getGrid(bvNow),
-				barNumber: this.musicBarNumber,
-				barStartTime: bvBarStart,
-				barDuration: bvBarDur,
-					bpm: this.musicBpm,
-				now: bvNow,
-				groupColors: this.groupColors,
-				typeKeys: this.getTypeIds(),
-				rootMidi: meta?.rootMidi ?? null,
-				modeName: meta?.mode.name ?? null,
-				bufferChordName: meta?.bufferChord?.name ?? null,
-				isBufferBar: meta?.isBufferBar ?? false,
-			})
-		}
-
-		// Upload radius scales after rhythm tick so new pulses render same-frame
 		this.uploadRadiusScales()
-
-		// Update skeuomorphic widget clocks
-		if (
-			this._phaseClock &&
-			this.musicBarNumber >= 0 &&
-			this.overtonePhaseRate > 0
-		) {
-			this._phaseClock.value =
-				(this.musicBarNumber % this.overtonePhaseRate) / this.overtonePhaseRate
-		}
-		if (this._latchClock && this.audioGraph.isEnabled) {
-			const barDur = barDuration(
-				this.musicBpm,
-				this.musicTimeMultiplier,
-			)
-			const now = this.audioGraph.currentTime
-			const barStart = barStartTimeFn(
-				this.tSoundStart,
-				this.musicBarNumber,
-				barDur,
-			)
-			const beatDur = barDur / 4
-			const latchDur = beatDur * this.detectionConfig.organelleLatchBeats
-			if (latchDur > 0) {
-				const elapsed = now - barStart
-				this._latchClock.value = (elapsed % latchDur) / latchDur
-			}
-		}
 
 
 		// Readback particle data every ~6 frames (~10Hz at 60fps)
@@ -1491,17 +1063,6 @@ export class RandomDots implements Simulation {
 							this.detectionConfig.organismProximityRadius * this.scale,
 					}
 
-					// Compute typeCounts before transferring arrays
-					const typeCounts: [number, number][] = []
-					{
-						const tcMap = new Map<number, number>()
-						for (let i = 0; i < n; i++) {
-							const ti = particleTypes[i]
-							tcMap.set(ti, (tcMap.get(ti) ?? 0) + 1)
-						}
-						for (const entry of tcMap) typeCounts.push(entry)
-					}
-
 					if (!this.detectionWorkerBusy) {
 						this.detectionWorkerBusy = true
 						const worker = this.ensureDetectionWorker()
@@ -1525,12 +1086,9 @@ export class RandomDots implements Simulation {
 							height: h,
 							config: scaledDetConfig,
 							dt,
-							bpm: this.musicBpm,
 							forceMatrix: this.forceMatrix,
 							typeKeys: types,
 							prevFrame: this.prevFrameWire,
-							typeCounts,
-							organismPrediction: this.organismPrediction,
 						}
 
 						this.lastParticleCount = n
@@ -1578,7 +1136,11 @@ export class RandomDots implements Simulation {
 		}
 
 		// --- Stain update pass (only when stain effect is active) ---
-		if (this.activePostEffect.id === "stain" && this.stainPipeline && this.stainBindGroups[this.stainPingPong]) {
+		if (
+			this.activePostEffect.id === "stain" &&
+			this.stainPipeline &&
+			this.stainBindGroups[this.stainPingPong]
+		) {
 			const postParams = this.getActivePostParams()
 			this.device!.queue.writeBuffer(
 				this.stainParamsBuffer!,
@@ -1618,7 +1180,8 @@ export class RandomDots implements Simulation {
 				],
 			})
 			pass.setPipeline(this.quadPipeline!)
-			const quadIdx = this.activePostEffect.id === "stain" ? (1 - this.stainPingPong) : 0
+			const quadIdx =
+				this.activePostEffect.id === "stain" ? 1 - this.stainPingPong : 0
 			pass.setBindGroup(0, this.quadBindGroups[quadIdx]!)
 			pass.draw(4)
 			pass.end()
@@ -2028,7 +1591,7 @@ export class RandomDots implements Simulation {
 	}
 
 	/** Returns param definitions for the active particle shader */
-	getParticleShaderParams(): import("../shader-menu").ShaderParamDef[] {
+	getParticleShaderParams(): import("../ui/shader-menu").ShaderParamDef[] {
 		const effect = this.activeParticleEffect
 		const vals = this.getActiveParticleParams()
 		return (effect.params ?? []).map((p) => ({
@@ -2050,7 +1613,7 @@ export class RandomDots implements Simulation {
 	}
 
 	/** Returns param definitions for the active post-process shader */
-	getPostShaderParams(): import("../shader-menu").ShaderParamDef[] {
+	getPostShaderParams(): import("../ui/shader-menu").ShaderParamDef[] {
 		const effect = this.activePostEffect
 		const vals = this.getActivePostParams()
 		return (effect.params ?? []).map((p) => ({
@@ -2074,7 +1637,7 @@ export class RandomDots implements Simulation {
 	/*  GPU resource creation helpers                                    */
 	/* ================================================================ */
 
-	private createBuffers() {
+	createBuffers() {
 		const device = this.device!
 		const bufSize = MAX_PARTICLES * PARTICLE_STRIDE
 
@@ -2224,7 +1787,7 @@ export class RandomDots implements Simulation {
 		})
 	}
 
-	private createComputePipeline() {
+	createComputePipeline() {
 		const device = this.device!
 
 		this.computeBindGroupLayout = device.createBindGroupLayout({
@@ -2305,7 +1868,7 @@ export class RandomDots implements Simulation {
 		})
 	}
 
-	private createRenderPipelines() {
+	createRenderPipelines() {
 		const device = this.device!
 
 		this.particleRenderBindGroupLayout = device.createBindGroupLayout({
@@ -2348,7 +1911,7 @@ export class RandomDots implements Simulation {
 		this.rebuildCircleOverlayPipeline()
 	}
 
-	private rebuildParticleRenderPipeline() {
+	rebuildParticleRenderPipeline() {
 		const device = this.device!
 		const shaderSrc = buildParticleShader(this.activeParticleEffect)
 		const particleModule = device.createShaderModule({ code: shaderSrc })
@@ -2388,7 +1951,7 @@ export class RandomDots implements Simulation {
 		this.rebuildParticleRenderBindGroups()
 	}
 
-	private rebuildCircleOverlayPipeline() {
+	rebuildCircleOverlayPipeline() {
 		const device = this.device!
 		// Circle overlay always uses the "solid" effect
 		const solidEffect = findParticleEffect("solid")
@@ -2406,46 +1969,15 @@ export class RandomDots implements Simulation {
 			fragment: {
 				module: circleModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
 
 		// Detection fill pipeline: writes organelle ID to R8Uint + color to RGBA8
-		const fillShaderCode =
-			PARTICLE_PREFIX +
-			`
-struct FillOutput {
-  @location(0) id: u32,
-  @location(1) color: vec4<f32>,
-};
-@fragment
-fn fs_main(in: VertexOutput) -> FillOutput {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  if (in.detection.x < 0.5) { discard; }
-  var out: FillOutput;
-  out.id = u32(in.organelleId);
-  out.color = vec4<f32>(in.color, 1.0);
-  return out;
-}`
-		const fillModule = device.createShaderModule({ code: fillShaderCode })
+		const fillModule = device.createShaderModule({
+			code: PARTICLE_PREFIX + detectionFillFrag,
+		})
 		this.detectionFillPipeline = device.createRenderPipeline({
 			layout: particlePipelineLayout,
 			vertex: { module: fillModule, entryPoint: "vs_main" },
@@ -2476,60 +2008,14 @@ fn fs_main(in: VertexOutput) -> FillOutput {
 			bindGroupLayouts: [this.detectionEdgeBindGroupLayout],
 		})
 
-		const edgeShaderCode = /* wgsl */ `
-@group(0) @binding(0) var detIdTex: texture_2d<u32>;
-@group(0) @binding(1) var detColorTex: texture_2d<f32>;
-
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-  // Fullscreen triangle (3 vertices, covers entire screen)
-  var pos = array<vec2<f32>, 3>(
-    vec2(-1.0, -1.0),
-    vec2( 3.0, -1.0),
-    vec2(-1.0,  3.0),
-  );
-  return vec4<f32>(pos[vi], 0.0, 1.0);
-}
-
-@fragment
-fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-  let coord = vec2<i32>(i32(pos.x), i32(pos.y));
-  let center = textureLoad(detIdTex, coord, 0).r;
-  let up    = textureLoad(detIdTex, coord + vec2(0, -1), 0).r;
-  let down  = textureLoad(detIdTex, coord + vec2(0,  1), 0).r;
-  let left  = textureLoad(detIdTex, coord + vec2(-1, 0), 0).r;
-  let right = textureLoad(detIdTex, coord + vec2( 1, 0), 0).r;
-
-  let isEdge = (up != center) || (down != center) || (left != center) || (right != center);
-  if (!isEdge) { discard; }
-
-  let color = textureLoad(detColorTex, coord, 0).rgb;
-  return vec4<f32>(color, 1.0);
-}`
-		const edgeModule = device.createShaderModule({ code: edgeShaderCode })
+		const edgeModule = device.createShaderModule({ code: detectionEdgeSrc })
 		this.detectionEdgePipeline = device.createRenderPipeline({
 			layout: edgePipelineLayout,
 			vertex: { module: edgeModule, entryPoint: "vs_main" },
 			fragment: {
 				module: edgeModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
@@ -2541,17 +2027,9 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			`let osmDepthRank = (det >> 24u) & 0xFFu;
   out.position = vec4<f32>(clip, f32(osmDepthRank) / 255.0, 1.0);`,
 		)
-		const osmFillShaderCode =
-			osmFillPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) u32 {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  if (in.detection.y < 0.5) { discard; }
-  return u32(in.organismId);
-}`
-		const osmFillModule = device.createShaderModule({ code: osmFillShaderCode })
+		const osmFillModule = device.createShaderModule({
+			code: osmFillPrefix + organismFillFrag,
+		})
 		this.organismFillPipeline = device.createRenderPipeline({
 			layout: particlePipelineLayout,
 			vertex: { module: osmFillModule, entryPoint: "vs_main" },
@@ -2561,11 +2039,7 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
 				targets: [{ format: "r8uint" }],
 			},
 			primitive: { topology: "triangle-list" },
-			depthStencil: {
-				format: "depth24plus",
-				depthWriteEnabled: true,
-				depthCompare: "less-equal",
-			},
+			depthStencil: DEPTH_LESS_EQUAL,
 		})
 
 		// Organism centroid circle pipeline: draws circles at organism centroids onto canvas
@@ -2587,80 +2061,8 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
 			bindGroupLayouts: [this.organismCentroidBindGroupLayout],
 		})
 
-		// Shared WGSL prefix for centroid circle shaders
-		const centroidPrefix = /* wgsl */ `
-struct OrganismCentroid {
-  pos: vec2<f32>,
-  radius: f32,
-  osmId: u32,
-};
-
-struct CentroidParams {
-  resolution: vec2<f32>,
-};
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-  @location(1) @interpolate(flat) osmId: u32,
-};
-
-@group(0) @binding(0) var<storage, read> centroids: array<OrganismCentroid>;
-@group(0) @binding(1) var<uniform> params: CentroidParams;
-
-const CORNERS = array<vec2<f32>, 6>(
-  vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
-  vec2(-1.0, 1.0),  vec2(1.0, -1.0), vec2(1.0, 1.0),
-);
-
-@vertex
-fn vs_main(
-  @builtin(vertex_index) vertexIndex: u32,
-  @builtin(instance_index) instanceIndex: u32,
-) -> VertexOutput {
-  let corner = CORNERS[vertexIndex];
-  let c = centroids[instanceIndex];
-
-  var out: VertexOutput;
-  out.uv = corner;
-  out.osmId = c.osmId;
-
-  let pos = c.pos + corner * c.radius;
-  var clip = (pos / params.resolution) * 2.0 - 1.0;
-  clip.y = -clip.y;
-  out.position = vec4<f32>(clip, 0.0, 1.0);
-
-  return out;
-}
-`
-
-		// Visual variant: white ring onto canvas
-		const centroidVisualCode =
-			centroidPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  let ring = smoothstep(0.55, 0.65, dist) * smoothstep(1.0, 0.9, dist);
-  if (ring < 0.01) { discard; }
-  return vec4<f32>(1.0, 1.0, 1.0, ring);
-}`
-
-		// Thin-ring variant for organism-level centroid circles
-		const centroidThinRingCode =
-			centroidPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  let ring = smoothstep(0.82, 0.88, dist) * smoothstep(1.0, 0.94, dist);
-  if (ring < 0.01) { discard; }
-  return vec4<f32>(1.0, 1.0, 1.0, ring);
-}`
 		const centroidThinRingModule = device.createShaderModule({
-			code: centroidThinRingCode,
+			code: centroidPrefix + centroidThinRingFrag,
 		})
 		this.osmLevelCentroidPipeline = device.createRenderPipeline({
 			layout: centroidPipelineLayout,
@@ -2668,91 +2070,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			fragment: {
 				module: centroidThinRingModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
 
-		// Inflated centroid prefix: 2.5x radius for fill/seed passes (matches particle inflation)
-		// osmId encodes: bits 0-7 = organism ID, bits 8-15 = depth rank
-		const centroidFillPrefix = /* wgsl */ `
-struct OrganismCentroid {
-  pos: vec2<f32>,
-  radius: f32,
-  osmId: u32,
-};
-
-struct CentroidParams {
-  resolution: vec2<f32>,
-};
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-  @location(1) @interpolate(flat) osmId: u32,
-};
-
-@group(0) @binding(0) var<storage, read> centroids: array<OrganismCentroid>;
-@group(0) @binding(1) var<uniform> params: CentroidParams;
-
-const CORNERS = array<vec2<f32>, 6>(
-  vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
-  vec2(-1.0, 1.0),  vec2(1.0, -1.0), vec2(1.0, 1.0),
-);
-
-@vertex
-fn vs_main(
-  @builtin(vertex_index) vertexIndex: u32,
-  @builtin(instance_index) instanceIndex: u32,
-) -> VertexOutput {
-  let corner = CORNERS[vertexIndex];
-  let c = centroids[instanceIndex];
-
-  var out: VertexOutput;
-  out.uv = corner;
-  out.osmId = c.osmId & 0xFFu;
-
-  let depthRank = (c.osmId >> 8u) & 0xFFu;
-  let pos = c.pos + corner * c.radius * 2.5;
-  var clip = (pos / params.resolution) * 2.0 - 1.0;
-  clip.y = -clip.y;
-  out.position = vec4<f32>(clip, f32(depthRank) / 255.0, 1.0);
-
-  return out;
-}
-`
-
-		// Fill variant: writes organism ID to r8uint (inflated radius)
-		const centroidFillCode =
-			centroidFillPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) u32 {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  return in.osmId;
-}`
 		const centroidModule = device.createShaderModule({
-			code: centroidVisualCode,
+			code: centroidPrefix + centroidVisualFrag,
 		})
 		const centroidFillModule = device.createShaderModule({
-			code: centroidFillCode,
+			code: centroidFillPrefixSrc + centroidFillFrag,
 		})
 		this.organismCentroidPipeline = device.createRenderPipeline({
 			layout: centroidPipelineLayout,
@@ -2760,23 +2087,7 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
 			fragment: {
 				module: centroidModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
@@ -2791,171 +2102,24 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
 				targets: [{ format: "r8uint" }],
 			},
 			primitive: { topology: "triangle-list" },
-			depthStencil: {
-				format: "depth24plus",
-				depthWriteEnabled: true,
-				depthCompare: "less-equal",
-			},
+			depthStencil: DEPTH_LESS_EQUAL,
 		})
 
-		// Organism connection line pipeline: draws white lines between linked organelle centroids
-		// Reuses the same bind group layout as centroid circles (storage + uniform)
-		// Shared WGSL prefix for line shaders
-		const linePrefix = /* wgsl */ `
-struct LineSegment {
-  startPos: vec2<f32>,
-  endPos: vec2<f32>,
-  osmId: u32,
-  _pad1: u32,
-  _pad2: u32,
-  _pad3: u32,
-};
-
-struct CentroidParams {
-  resolution: vec2<f32>,
-};
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) along: f32,
-  @location(1) @interpolate(flat) osmId: u32,
-};
-
-@group(0) @binding(0) var<storage, read> lines: array<LineSegment>;
-@group(0) @binding(1) var<uniform> params: CentroidParams;
-
-const CORNERS = array<vec2<f32>, 6>(
-  vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(0.0, 1.0),
-  vec2(0.0, 1.0),  vec2(1.0, -1.0), vec2(1.0, 1.0),
-);
-
-@vertex
-fn vs_main(
-  @builtin(vertex_index) vertexIndex: u32,
-  @builtin(instance_index) instanceIndex: u32,
-) -> VertexOutput {
-  let corner = CORNERS[vertexIndex];
-  let seg = lines[instanceIndex];
-  let dir = seg.endPos - seg.startPos;
-  let len = length(dir);
-  let tangent = dir / max(len, 0.001);
-  let normal = vec2<f32>(-tangent.y, tangent.x);
-
-  let halfWidth = 1.5; // pixels
-  let pos = seg.startPos + tangent * corner.x * len + normal * corner.y * halfWidth;
-
-  var clip = (pos / params.resolution) * 2.0 - 1.0;
-  clip.y = -clip.y;
-
-  var out: VertexOutput;
-  out.position = vec4<f32>(clip, 0.0, 1.0);
-  out.along = corner.x;
-  out.osmId = seg.osmId;
-  return out;
-}
-`
-
-		// Visual variant: white lines onto canvas
-		const lineVisualCode =
-			linePrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-  let fade = smoothstep(0.0, 0.05, in.along) * smoothstep(1.0, 0.95, in.along);
-  return vec4<f32>(1.0, 1.0, 1.0, 0.6 * fade);
-}`
-
-		// Inflated line prefix: wider fill to create smooth outline envelope
-		const lineFillPrefix = /* wgsl */ `
-struct LineSegment {
-  startPos: vec2<f32>,
-  endPos: vec2<f32>,
-  osmId: u32,
-  _pad1: u32,
-  _pad2: u32,
-  _pad3: u32,
-};
-
-struct CentroidParams {
-  resolution: vec2<f32>,
-};
-
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) along: f32,
-  @location(1) @interpolate(flat) osmId: u32,
-};
-
-@group(0) @binding(0) var<storage, read> lines: array<LineSegment>;
-@group(0) @binding(1) var<uniform> params: CentroidParams;
-
-const CORNERS = array<vec2<f32>, 6>(
-  vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(0.0, 1.0),
-  vec2(0.0, 1.0),  vec2(1.0, -1.0), vec2(1.0, 1.0),
-);
-
-@vertex
-fn vs_main(
-  @builtin(vertex_index) vertexIndex: u32,
-  @builtin(instance_index) instanceIndex: u32,
-) -> VertexOutput {
-  let corner = CORNERS[vertexIndex];
-  let seg = lines[instanceIndex];
-  let dir = seg.endPos - seg.startPos;
-  let len = length(dir);
-  let tangent = dir / max(len, 0.001);
-  let normal = vec2<f32>(-tangent.y, tangent.x);
-
-  let halfWidth = 20.0; // inflated to match particle fill inflation
-  // Extend endpoints by halfWidth for rounded caps
-  let pos = seg.startPos - tangent * halfWidth + tangent * corner.x * (len + halfWidth * 2.0) + normal * corner.y * halfWidth;
-
-  var clip = (pos / params.resolution) * 2.0 - 1.0;
-  clip.y = -clip.y;
-
-  let depthRank = (seg.osmId >> 8u) & 0xFFu;
-  var out: VertexOutput;
-  out.position = vec4<f32>(clip, f32(depthRank) / 255.0, 1.0);
-  out.along = corner.x;
-  out.osmId = seg.osmId & 0xFFu;
-  return out;
-}
-`
-
-		// Fill variant: writes organism ID to r8uint (inflated width)
-		const lineFillCode =
-			lineFillPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) u32 {
-  return in.osmId;
-}`
-
-		const lineModule = device.createShaderModule({ code: lineVisualCode })
-		const lineFillModule = device.createShaderModule({ code: lineFillCode })
+		// Organism connection line pipeline: draws white lines between linked organelle centroids.
+		// Reuses the same bind group layout as centroid circles (storage + uniform).
+		const lineModule = device.createShaderModule({
+			code: linePrefix + lineVisualFrag,
+		})
+		const lineFillModule = device.createShaderModule({
+			code: lineFillPrefixSrc + lineFillFrag,
+		})
 		this.organismLinePipeline = device.createRenderPipeline({
 			layout: centroidPipelineLayout,
 			vertex: { module: lineModule, entryPoint: "vs_main" },
 			fragment: {
 				module: lineModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
@@ -2968,11 +2132,7 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
 				targets: [{ format: "r8uint" }],
 			},
 			primitive: { topology: "triangle-list" },
-			depthStencil: {
-				format: "depth24plus",
-				depthWriteEnabled: true,
-				depthCompare: "less-equal",
-			},
+			depthStencil: DEPTH_LESS_EQUAL,
 		})
 
 		// Organism edge pipeline: fullscreen edge detection, white outlines
@@ -2989,82 +2149,21 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
 			bindGroupLayouts: [this.organismEdgeBindGroupLayout],
 		})
 
-		const osmEdgeShaderCode = /* wgsl */ `
-@group(0) @binding(0) var osmIdTex: texture_2d<u32>;
-
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-  var pos = array<vec2<f32>, 3>(
-    vec2(-1.0, -1.0),
-    vec2( 3.0, -1.0),
-    vec2(-1.0,  3.0),
-  );
-  return vec4<f32>(pos[vi], 0.0, 1.0);
-}
-
-@fragment
-fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-  let coord = vec2<i32>(i32(pos.x), i32(pos.y));
-  let center = textureLoad(osmIdTex, coord, 0).r;
-  let up    = textureLoad(osmIdTex, coord + vec2(0, -1), 0).r;
-  let down  = textureLoad(osmIdTex, coord + vec2(0,  1), 0).r;
-  let left  = textureLoad(osmIdTex, coord + vec2(-1, 0), 0).r;
-  let right = textureLoad(osmIdTex, coord + vec2( 1, 0), 0).r;
-  let isEdge = (up != center) || (down != center) || (left != center) || (right != center);
-  if (!isEdge) { discard; }
-  return vec4<f32>(1.0, 1.0, 1.0, 1.0);
-}`
-		const osmEdgeModule = device.createShaderModule({ code: osmEdgeShaderCode })
+		const osmEdgeModule = device.createShaderModule({ code: organismEdgeSrc })
 		this.organismEdgePipeline = device.createRenderPipeline({
 			layout: osmEdgePipelineLayout,
 			vertex: { module: osmEdgeModule, entryPoint: "vs_main" },
 			fragment: {
 				module: osmEdgeModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
 
 		// --- JFA seed pipelines ---
-		// Organelle JFA seed: writes packed (x,y) + organelleId to rg32uint
-		const jfaOrganelleSeedCode =
-			PARTICLE_PREFIX +
-			`
-struct SeedOutput {
-  @location(0) seed: vec2<u32>,
-  @location(1) color: vec4<f32>,
-};
-@fragment
-fn fs_main(in: VertexOutput) -> SeedOutput {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  if (in.detection.x < 0.5) { discard; }
-  let px = vec2<u32>(u32(in.position.x), u32(in.position.y));
-  let packed = (px.x << 16u) | px.y;
-  var out: SeedOutput;
-  out.seed = vec2<u32>(packed, u32(in.organelleId));
-  out.color = vec4<f32>(in.color, 1.0);
-  return out;
-}`
 		const jfaOrganelleSeedModule = device.createShaderModule({
-			code: jfaOrganelleSeedCode,
+			code: PARTICLE_PREFIX + jfaOrganelleSeedFrag,
 		})
 		this.jfaOrganelleSeedPipeline = device.createRenderPipeline({
 			layout: particlePipelineLayout,
@@ -3077,21 +2176,8 @@ fn fs_main(in: VertexOutput) -> SeedOutput {
 			primitive: { topology: "triangle-list" },
 		})
 
-		// Organism JFA seed: writes packed (x,y) + organismId to rg32uint
-		const jfaOrganismSeedCode =
-			osmFillPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  if (in.detection.y < 0.5) { discard; }
-  let px = vec2<u32>(u32(in.position.x), u32(in.position.y));
-  let packed = (px.x << 16u) | px.y;
-  return vec2<u32>(packed, u32(in.organismId));
-}`
 		const jfaOrganismSeedModule = device.createShaderModule({
-			code: jfaOrganismSeedCode,
+			code: osmFillPrefix + jfaOrganismSeedFrag,
 		})
 		this.jfaOrganismSeedPipeline = device.createRenderPipeline({
 			layout: particlePipelineLayout,
@@ -3102,27 +2188,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
 				targets: [{ format: "rg32uint" }],
 			},
 			primitive: { topology: "triangle-list" },
-			depthStencil: {
-				format: "depth24plus",
-				depthWriteEnabled: true,
-				depthCompare: "less-equal",
-			},
+			depthStencil: DEPTH_LESS_EQUAL,
 		})
 
-		// Organism centroid seed: writes packed coords + osmId to rg32uint (inflated radius)
-		const centroidSeedCode =
-			centroidFillPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
-  let dist = length(in.uv);
-  if (dist > 1.0) { discard; }
-  let px = vec2<u32>(u32(in.position.x), u32(in.position.y));
-  let packed = (px.x << 16u) | px.y;
-  return vec2<u32>(packed, in.osmId);
-}`
 		const centroidSeedModule = device.createShaderModule({
-			code: centroidSeedCode,
+			code: centroidFillPrefixSrc + centroidSeedFrag,
 		})
 		this.jfaOrganismCentroidSeedPipeline = device.createRenderPipeline({
 			layout: centroidPipelineLayout,
@@ -3133,24 +2203,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
 				targets: [{ format: "rg32uint" }],
 			},
 			primitive: { topology: "triangle-list" },
-			depthStencil: {
-				format: "depth24plus",
-				depthWriteEnabled: true,
-				depthCompare: "less-equal",
-			},
+			depthStencil: DEPTH_LESS_EQUAL,
 		})
 
-		// Organism line seed: writes packed coords + osmId to rg32uint (inflated width)
-		const lineSeedCode =
-			lineFillPrefix +
-			`
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
-  let px = vec2<u32>(u32(in.position.x), u32(in.position.y));
-  let packed = (px.x << 16u) | px.y;
-  return vec2<u32>(packed, in.osmId);
-}`
-		const lineSeedModule = device.createShaderModule({ code: lineSeedCode })
+		const lineSeedModule = device.createShaderModule({
+			code: lineFillPrefixSrc + lineSeedFrag,
+		})
 		this.jfaOrganismLineSeedPipeline = device.createRenderPipeline({
 			layout: centroidPipelineLayout,
 			vertex: { module: lineSeedModule, entryPoint: "vs_main" },
@@ -3160,11 +2218,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
 				targets: [{ format: "rg32uint" }],
 			},
 			primitive: { topology: "triangle-list" },
-			depthStencil: {
-				format: "depth24plus",
-				depthWriteEnabled: true,
-				depthCompare: "less-equal",
-			},
+			depthStencil: DEPTH_LESS_EQUAL,
 		})
 
 		// --- JFA edge detection pipelines ---
@@ -3196,76 +2250,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec2<u32> {
 			bindGroupLayouts: [this.jfaEdgeBindGroupLayout],
 		})
 
-		const jfaEdgeShaderPrefix = /* wgsl */ `
-@group(0) @binding(0) var jfaTex: texture_2d<u32>;
-@group(0) @binding(1) var detColorTex: texture_2d<f32>;
-
-struct BubbleParams {
-  threshold: f32,
-  edgeWidth: f32,
-  organelleThreshold: f32,
-  _pad1: f32,
-};
-@group(0) @binding(2) var<uniform> bubbleParams: BubbleParams;
-@group(0) @binding(3) var idTex: texture_2d<u32>;
-
-const SENTINEL = 0xFFFFFFFFu;
-
-fn unpackXY(packed: u32) -> vec2<f32> {
-  return vec2<f32>(f32(packed >> 16u), f32(packed & 0xFFFFu));
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-  var pos = array<vec2<f32>, 3>(
-    vec2(-1.0, -1.0),
-    vec2( 3.0, -1.0),
-    vec2(-1.0,  3.0),
-  );
-  return vec4<f32>(pos[vi], 0.0, 1.0);
-}
-`
-		// Organelle JFA edge: smooth distance-based bubble + Voronoi where bubbles touch
-		const jfaOrganelleEdgeCode =
-			jfaEdgeShaderPrefix +
-			`
-@fragment
-fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-  let coord = vec2<i32>(i32(pos.x), i32(pos.y));
-
-  let jfaCenter = textureLoad(jfaTex, coord, 0).rg;
-  if (jfaCenter.x == SENTINEL) { discard; }
-
-  let seedPos = unpackXY(jfaCenter.x);
-  let dist = distance(vec2<f32>(coord), seedPos);
-  let groupId = jfaCenter.y;
-
-  // Smooth distance-based bubble edge around each organelle (half organism threshold)
-  let orgThreshold = bubbleParams.organelleThreshold;
-  let halfEdge = bubbleParams.edgeWidth * 0.5;
-  let bubble = dist > (orgThreshold - halfEdge) && dist < (orgThreshold + halfEdge);
-
-  // Voronoi boundary where organelle bubbles overlap
-  var voronoi = false;
-  for (var dy = -1; dy <= 1; dy++) {
-    for (var dx = -1; dx <= 1; dx++) {
-      if (dx == 0 && dy == 0) { continue; }
-      let nc = coord + vec2<i32>(dx, dy);
-      let n = textureLoad(jfaTex, nc, 0).rg;
-      if (n.x != SENTINEL && n.y != groupId && dist < orgThreshold) {
-        voronoi = true;
-      }
-    }
-  }
-
-  if (!bubble && !voronoi) { discard; }
-  // Sample color from nearest seed position (current pixel may be far from any particle)
-  let seedCoord = vec2<i32>(unpackXY(jfaCenter.x));
-  let color = textureLoad(detColorTex, seedCoord, 0).rgb;
-  return vec4<f32>(color, 1.0);
-}`
 		const jfaOrgEdgeModule = device.createShaderModule({
-			code: jfaOrganelleEdgeCode,
+			code: jfaEdgePrefix + jfaOrganelleEdgeFrag,
 		})
 		this.jfaOrganelleEdgePipeline = device.createRenderPipeline({
 			layout: jfaEdgePipelineLayout,
@@ -3273,66 +2259,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			fragment: {
 				module: jfaOrgEdgeModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
 
-		// Organism JFA edge: smooth distance-based bubble + Voronoi inter-group boundaries (white)
-		const jfaOrganismEdgeCode =
-			jfaEdgeShaderPrefix +
-			`
-@fragment
-fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-  let coord = vec2<i32>(i32(pos.x), i32(pos.y));
-  let centerId = textureLoad(idTex, coord, 0).r;
-
-  let jfaCenter = textureLoad(jfaTex, coord, 0).rg;
-  if (jfaCenter.x == SENTINEL) { discard; }
-
-  let seedPos = unpackXY(jfaCenter.x);
-  let dist = distance(vec2<f32>(coord), seedPos);
-  let groupId = jfaCenter.y;
-
-  // Smooth distance-based bubble edge around each organism
-  let halfEdge = bubbleParams.edgeWidth * 0.5;
-  let bubble = dist > (bubbleParams.threshold - halfEdge) && dist < (bubbleParams.threshold + halfEdge);
-
-  // JFA Voronoi inter-group boundary (organism vs organism)
-  var voronoi = false;
-  for (var dy = -1; dy <= 1; dy++) {
-    for (var dx = -1; dx <= 1; dx++) {
-      if (dx == 0 && dy == 0) { continue; }
-      let nc = coord + vec2<i32>(dx, dy);
-      let n = textureLoad(jfaTex, nc, 0).rg;
-      let nId = textureLoad(idTex, nc, 0).r;
-      if (n.x != SENTINEL && n.y != groupId && dist < bubbleParams.threshold) {
-        voronoi = true;
-      }
-    }
-  }
-
-  if (!bubble && !voronoi) { discard; }
-  return vec4<f32>(1.0, 1.0, 1.0, 1.0);
-}`
 		const jfaOsmEdgeModule = device.createShaderModule({
-			code: jfaOrganismEdgeCode,
+			code: jfaEdgePrefix + jfaOrganismEdgeFrag,
 		})
 		this.jfaOrganismEdgePipeline = device.createRenderPipeline({
 			layout: jfaEdgePipelineLayout,
@@ -3340,23 +2273,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 			fragment: {
 				module: jfaOsmEdgeModule,
 				entryPoint: "fs_main",
-				targets: [
-					{
-						format: this.canvasFormat,
-						blend: {
-							color: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-							alpha: {
-								srcFactor: "src-alpha",
-								dstFactor: "one-minus-src-alpha",
-								operation: "add",
-							},
-						},
-					},
-				],
+				targets: [{ format: this.canvasFormat, blend: ALPHA_BLEND }],
 			},
 			primitive: { topology: "triangle-list" },
 		})
@@ -3364,7 +2281,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.rebuildCircleRenderBindGroups()
 	}
 
-	private createOffscreenTexture() {
+	createOffscreenTexture() {
 		const device = this.device!
 		if (this.offscreenTexture) this.offscreenTexture.destroy()
 		for (const t of this.stainTextures) t?.destroy()
@@ -3459,7 +2376,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	private createQuadPipeline() {
+	createQuadPipeline() {
 		const device = this.device!
 
 		this.quadBindGroupLayout = device.createBindGroupLayout({
@@ -3486,7 +2403,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.rebuildQuadPipeline()
 	}
 
-	private rebuildQuadPipeline() {
+	rebuildQuadPipeline() {
 		const device = this.device!
 		const shaderSrc = buildQuadShader(this.activePostEffect)
 		const quadModule = device.createShaderModule({ code: shaderSrc })
@@ -3507,7 +2424,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.rebuildQuadBindGroup()
 	}
 
-	private createStainPipeline() {
+	createStainPipeline() {
 		const device = this.device!
 
 		this.stainParamsBuffer = device.createBuffer({
@@ -3517,10 +2434,22 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 		this.stainBindGroupLayout = device.createBindGroupLayout({
 			entries: [
-				{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+				{
+					binding: 0,
+					visibility: GPUShaderStage.FRAGMENT,
+					texture: { sampleType: "float" },
+				},
 				{ binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-				{ binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-				{ binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+				{
+					binding: 2,
+					visibility: GPUShaderStage.FRAGMENT,
+					texture: { sampleType: "float" },
+				},
+				{
+					binding: 3,
+					visibility: GPUShaderStage.FRAGMENT,
+					buffer: { type: "uniform" },
+				},
 			],
 		})
 
@@ -3541,18 +2470,20 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.rebuildStainBindGroups()
 	}
 
-	private clearStainTextures() {
+	clearStainTextures() {
 		const device = this.device!
 		const encoder = device.createCommandEncoder()
 		for (let i = 0; i < 2; i++) {
 			if (!this.stainViews[i]) continue
 			const pass = encoder.beginRenderPass({
-				colorAttachments: [{
-					view: this.stainViews[i]!,
-					clearValue: { r: 0, g: 0, b: 0, a: 0 },
-					loadOp: "clear",
-					storeOp: "store",
-				}],
+				colorAttachments: [
+					{
+						view: this.stainViews[i]!,
+						clearValue: { r: 0, g: 0, b: 0, a: 0 },
+						loadOp: "clear",
+						storeOp: "store",
+					},
+				],
 			})
 			pass.end()
 		}
@@ -3560,9 +2491,14 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.stainPingPong = 0
 	}
 
-	private rebuildStainBindGroups() {
+	rebuildStainBindGroups() {
 		const device = this.device!
-		if (!this.stainBindGroupLayout || !this.stainViews[0] || !this.stainViews[1]) return
+		if (
+			!this.stainBindGroupLayout ||
+			!this.stainViews[0] ||
+			!this.stainViews[1]
+		)
+			return
 
 		// Group 0: read stain[0] + particles → write stain[1]
 		// Group 1: read stain[1] + particles → write stain[0]
@@ -3583,7 +2519,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	/*  Bind group management                                            */
 	/* ================================================================ */
 
-	private rebuildAllBindGroups() {
+	rebuildAllBindGroups() {
 		this.rebuildComputeBindGroups()
 		this.rebuildParticleRenderBindGroups()
 		this.rebuildCircleRenderBindGroups()
@@ -3591,7 +2527,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.rebuildStainBindGroups()
 	}
 
-	private rebuildComputeBindGroups() {
+	rebuildComputeBindGroups() {
 		const device = this.device!
 		const layout = this.computeBindGroupLayout!
 
@@ -3620,7 +2556,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		})
 	}
 
-	private rebuildParticleRenderBindGroups() {
+	rebuildParticleRenderBindGroups() {
 		const device = this.device!
 		const layout = this.particleRenderBindGroupLayout!
 		const falloffView = this.falloffTexture!.createView()
@@ -3641,7 +2577,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	private rebuildCircleRenderBindGroups() {
+	rebuildCircleRenderBindGroups() {
 		const device = this.device!
 		const layout = this.particleRenderBindGroupLayout!
 		const falloffView = this.falloffTexture!.createView()
@@ -3772,7 +2708,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.rebuildJfaBindGroups()
 	}
 
-	private rebuildJfaBindGroups() {
+	rebuildJfaBindGroups() {
 		const device = this.device!
 		if (
 			!this.jfaComputeBindGroupLayout ||
@@ -3872,7 +2808,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	private rebuildQuadBindGroup() {
+	rebuildQuadBindGroup() {
 		const device = this.device!
 		// Two bind groups: [0] reads stain[1], [1] reads stain[0]
 		// After stain pass writes to stain[1-pingPong], quad reads stain[1-pingPong]
@@ -3884,7 +2820,10 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 					{ binding: 0, resource: this.offscreenView! },
 					{ binding: 1, resource: this.offscreenSampler! },
 					{ binding: 2, resource: { buffer: this.quadParamsBuffer! } },
-					{ binding: 3, resource: this.stainViews[stainReadIdx] ?? this.offscreenView! },
+					{
+						binding: 3,
+						resource: this.stainViews[stainReadIdx] ?? this.offscreenView!,
+					},
 				],
 			})
 		}
@@ -3894,7 +2833,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	/*  Data upload helpers                                               */
 	/* ================================================================ */
 
-	private uploadBubbleParams() {
+	uploadBubbleParams() {
 		if (!this.device || !this.bubbleParamsBuffer) return
 		this.device.queue.writeBuffer(
 			this.bubbleParamsBuffer,
@@ -3908,7 +2847,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		)
 	}
 
-	private uploadParticleData() {
+	uploadParticleData() {
 		const device = this.device!
 		const n = this.count
 		const types = this.getTypeIds()
@@ -3942,21 +2881,31 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		device.queue.writeBuffer(this.particleBuffers[1]!, 0, data)
 	}
 
-	private uploadForceMatrix() {
+	uploadForceMatrix() {
 		const device = this.device!
 		const types = this.getTypeIds()
 		const n = types.length
 		const flat = new Float32Array(MAX_TYPES * MAX_TYPES)
 
+		// Also build a dense N×N view for the music engine so it can
+		// derive key/mode from the current matrix (recomputed once per
+		// change; O(N²) is negligible for typical N ≤ 12).
+		const dense: number[][] = new Array(n)
 		for (let si = 0; si < n; si++) {
 			const row = this.forceMatrix[types[si]]
-			if (!row) continue
-			for (let ti = 0; ti < n; ti++) {
-				flat[si * MAX_TYPES + ti] = row[types[ti]] ?? 0
+			const denseRow = new Array(n).fill(0)
+			if (row) {
+				for (let ti = 0; ti < n; ti++) {
+					const v = row[types[ti]] ?? 0
+					flat[si * MAX_TYPES + ti] = v
+					denseRow[ti] = v
+				}
 			}
+			dense[si] = denseRow
 		}
 
 		device.queue.writeBuffer(this.forceMatrixBuffer!, 0, flat)
+		this.music.setForceMatrix(dense)
 	}
 
 	/**
@@ -3964,7 +2913,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	 * This is a separate GPU buffer (1 u32 per particle), avoiding strided writes
 	 * into the particle buffer and keeping detection data cleanly separated.
 	 */
-	private uploadDetectionIds(frame: DetectionFrame, n: number) {
+	uploadDetectionIds(frame: DetectionFrame, n: number) {
 		const device = this.device!
 		const buf = this.detectionBuffer
 		if (!buf) return
@@ -4025,7 +2974,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	/** Get current param values for the active particle effect */
-	private getActiveParticleParams(): number[] {
+	getActiveParticleParams(): number[] {
 		const id = this.activeParticleEffect.id
 		return (
 			this.particleEffectParams[id] ?? effectDefaults(this.activeParticleEffect)
@@ -4033,13 +2982,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	/** Get current param values for the active post effect */
-	private getActivePostParams(): number[] {
+	getActivePostParams(): number[] {
 		const id = this.activePostEffect.id
 		return this.postEffectParams[id] ?? effectDefaults(this.activePostEffect)
 	}
 
 	/** Ensure defaults exist for all effects */
-	private initEffectParams() {
+	initEffectParams() {
 		for (const e of particleEffects) {
 			if (!this.particleEffectParams[e.id])
 				this.particleEffectParams[e.id] = effectDefaults(e)
@@ -4051,7 +3000,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	/** Sync hidden inputs with current param maps (triggers save) */
-	private syncParamHiddenInputs() {
+	syncParamHiddenInputs() {
 		if (this._hiddenParticleParams) {
 			this._hiddenParticleParams.value = JSON.stringify(
 				this.particleEffectParams,
@@ -4068,7 +3017,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	private uploadRenderParams() {
+	uploadRenderParams() {
 		const device = this.device!
 		const eff = this.getEffectiveParams()
 		const params = this.getActiveParticleParams()
@@ -4141,13 +3090,15 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	 * Re-anchor the bar grid so the next bar boundary fires immediately.
 	 * Called when BPM or time multiplier change mid-playback.
 	 */
-	private ensureDetectionWorker(): Worker {
+	ensureDetectionWorker(): Worker {
 		if (!this.detectionWorker) {
 			this.detectionWorker = new Worker(
-				new URL("../detection-worker.ts", import.meta.url),
+				new URL("../detection/worker.ts", import.meta.url),
 				{ type: "module" },
 			)
-			this.detectionWorker.onmessage = (e: MessageEvent<DetectionWorkerResponse>) => {
+			this.detectionWorker.onmessage = (
+				e: MessageEvent<DetectionWorkerResponse>,
+			) => {
 				const resp = e.data
 				this.detectionWorkerBusy = false
 
@@ -4155,19 +3106,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				const frame = deserializeDetectionFrame(resp.frame)
 				this.detectionState = frame
 				this.prevFrameWire = resp.frame
-
-				// Deserialize global metrics
-				this.latestGlobalMetrics = {
-					freeParticleCount: resp.metrics.freeParticleCount,
-					freeParticlePercentByType: new Map(resp.metrics.freeParticlePercentByType),
-					avgVelocity: resp.metrics.avgVelocity,
-					avgOrganelleDensity: resp.metrics.avgOrganelleDensity,
-					speciesCount: resp.metrics.speciesCount,
-					organismCount: resp.metrics.organismCount,
-					spatialEntropy: resp.metrics.spatialEntropy,
-					events: resp.metrics.events as GlobalMetrics["events"],
-					organismFulfillment: resp.metrics.organismFulfillment,
-				}
 
 				// Upload overlays if enabled
 				if (
@@ -4181,7 +3119,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 					this.uploadOrganismCentroids(frame)
 					this.uploadOsmLevelCentroids(frame)
 				}
-				this.updateLedgerUI()
+				updateLedgerUI(this)
 
 				// Update organism registry for stable identity tracking
 				const organelleMap = new Map<number, OrganelleState>()
@@ -4194,7 +3132,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 					organelleMap,
 					0.1, // approximate dt — registry matching is tolerant
 					80,
-					this.audioGraph.currentTime,
+					performance.now() / 1000,
 					this.width,
 					this.height,
 				)
@@ -4203,260 +3141,11 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		return this.detectionWorker
 	}
 
-	private ensureScheduleWorker(): Worker {
-		if (!this.scheduleWorker) {
-			this.scheduleWorker = new Worker(
-				new URL("../music/schedule-worker.ts", import.meta.url),
-				{ type: "module" },
-			)
-			// A worker that fails to load (stale deploy, 404'd chunk) never
-			// posts `done`; without this, pendingBarRequest would stay true
-			// forever and music scheduling would stall until page reload.
-			this.scheduleWorker.addEventListener("error", (e) => {
-				console.error("schedule-worker error — unblocking scheduler", e)
-				this.pendingBarRequest = false
-			})
-		}
-		return this.scheduleWorker
-	}
-
-	/**
-	 * Re-anchor the bar timeline (BPM/time-multiplier change, sound
-	 * re-enable). Flushes everything dated on the old timeline: live tuplet
-	 * grids (or their future-dated slots would replay over the new bar 0),
-	 * the in-flight worker request (its bar numbering is stale), and the
-	 * pending bar-meta.
-	 */
-	private resetBarGrid(): void {
-		if (this.audioGraph.isEnabled) {
-			this.tSoundStart = this.audioGraph.currentTime
-			this.musicBarNumber = -1
-			this.barRepeatIndex = 0
-			this.audioGraph.clearGrids()
-			if (this.workerMsgHandler && this.scheduleWorker) {
-				this.scheduleWorker.removeEventListener(
-					"message",
-					this.workerMsgHandler,
-				)
-				this.workerMsgHandler = null
-			}
-			this.pendingBarRequest = false
-			this.pendingBarMeta = null
-		}
-	}
-
-	/**
-	 * Build a BarSnapshot from current detection state for the hit scheduler.
-	 */
-	private buildBarSnapshot(
-		barStartTime: number,
-		barDur: number,
-		barNumber: number,
-	): BarSnapshot {
-		const typeKeys = this.getTypeIds()
-		const organisms: SnapshotOrganism[] = []
-
-		if (this.organismRegistry && this.detectionState) {
-			const organelleMap = new Map<number, OrganelleState>()
-			for (const org of this.detectionState.organelles) {
-				organelleMap.set(org.id, org)
-			}
-
-			for (const ro of this.organismRegistry.organisms) {
-				const composition = new Map<number, number>()
-
-				// BFS the organism tree to get organelle IDs in traversal order.
-				// Most-connected organelles (structural core) come first.
-				const bfsOrder: number[] = []
-				const queue: OrganelleTreeNode[] = [ro.tree]
-				while (queue.length > 0) {
-					const node = queue.shift()!
-					bfsOrder.push(node.organelleId)
-					for (const child of node.children) queue.push(child)
-				}
-
-				const snapshotOrganelles: SnapshotOrganelle[] = []
-
-				for (const orgId of bfsOrder) {
-					const org = organelleMap.get(orgId)
-					if (!org) continue
-
-					composition.set(org.typeId, (composition.get(org.typeId) ?? 0) + 1)
-
-					const speed = Math.sqrt(
-						org.avgVelX * org.avgVelX + org.avgVelY * org.avgVelY,
-					)
-					const w =
-						(org.maxCol - org.minCol + 1) *
-						(this.detectionConfig.proximityRadius || 18)
-					const h =
-						(org.maxRow - org.minRow + 1) *
-						(this.detectionConfig.proximityRadius || 18)
-					const area = w * h
-					const density = area > 0 ? org.particleIndices.length / area : 0
-					const spatialRadius = Math.max(w, h) / 2
-
-					// Angular offset from organism velocity vector (visual only)
-					const dx = org.centroidX - ro.centroidX
-					const dy = org.centroidY - ro.centroidY
-					const orgAngle = Math.atan2(dy, dx)
-					const velAngle = Math.atan2(ro.velY, ro.velX)
-					const angularOffset = orgAngle - velAngle
-
-					snapshotOrganelles.push({
-						id: org.id,
-						typeId: org.typeId,
-						particleCount: org.particleIndices.length,
-						centroidX: org.centroidX,
-						centroidY: org.centroidY,
-						centroidSpeed: speed,
-						density,
-						spatialRadius,
-						angularOffset,
-						crossTypeLinks: ro.crossTypeLinks.get(org.id) ?? 0,
-					})
-				}
-
-				organisms.push({
-					registryId: ro.registryId,
-					colorSignature: ro.colorSignature,
-					centroidX: ro.centroidX,
-					centroidY: ro.centroidY,
-					velX: ro.velX,
-					velY: ro.velY,
-					creationTime: ro.creationTime,
-					organelles: snapshotOrganelles,
-					composition,
-					typeAdjacency: extractTypeAdjacency(ro.tree),
-				})
-			}
-		}
-
-		// Advance organism cycle and derive root
-		const organismTrees = new Map<number, OrganelleTreeNode>()
-		if (this.organismRegistry) {
-			for (const ro of this.organismRegistry.organisms) {
-				organismTrees.set(ro.registryId, ro.tree)
-			}
-		}
-		this.organismCycle = buildOrganismCycle(organisms, this.organismCycle)
-
-		// Species eligibility: at least one organism old enough to qualify.
-		// Prevents the cycle from picking a species whose organisms would all
-		// fail the scheduler's age gate, which would silence the whole bar.
-		// Bar 0 is exempt — everything is born at t=0.
-		let eligibleSpecies: ReadonlySet<string> | null = null
-		if (barNumber !== 0) {
-			const eligible = new Set<string>()
-			for (const org of organisms) {
-				const ageInBars = (barStartTime - org.creationTime) / barDur
-				if (ageInBars >= RandomDots.QUALIFICATION_FRACTION) {
-					eligible.add(org.colorSignature)
-				}
-			}
-			eligibleSpecies = eligible
-		}
-
-		const { cycle: advancedCycle, organism: _cycleOrganism, chordDegreeIndex } = advanceCycle(
-			this.organismCycle, organisms, organismTrees, this.rootStrategy, eligibleSpecies,
-		)
-		this.organismCycle = advancedCycle
-		// Always pass the held root — zero-organism bars must NOT fall back
-		// to deriveRoot's default C, or the pad audibly wobbles held-key →
-		// C → held-key across organism droughts.
-		const rootOverride = advancedCycle.accumulatedRoot
-		const activeSpecies = _cycleOrganism?.colorSignature ?? null
-
-		return {
-			organisms,
-			globalMetrics: this.latestGlobalMetrics!,
-			forceMatrix: this.forceMatrix,
-			typeKeys,
-			canvasWidth: this.width,
-			rootOverride,
-			activeSpecies,
-			chordDegree: chordDegreeIndex,
-		}
-	}
-
-	private snapshotPulseParticles(
-		speciesSignature: string,
-		typeId: number,
-		subdivisionIndex: number,
-	): Uint32Array | null {
-		const frame = this.detectionState
-		const registry = this.organismRegistry
-		if (!frame || !registry) return null
-
-		const organelleById = new Map<number, OrganelleState>()
-		for (const org of frame.organelles) {
-			organelleById.set(org.id, org)
-		}
-
-		// Find all organisms of this species
-		const speciesOrganisms = registry.organisms.filter(
-			(o) => o.colorSignature === speciesSignature,
-		)
-		if (speciesOrganisms.length === 0) return null
-
-		// Collect particle indices from one organelle per organism (round-robin)
-		const allIndices: Uint32Array[] = []
-		for (const ro of speciesOrganisms) {
-			// Pick one organelle of the target typeId within this organism.
-			// Visual ordering: alternating left-right from organism velocity vector.
-			const matching: { id: number; angularOffset: number }[] = []
-			const velAngle = Math.atan2(ro.velY, ro.velX)
-			for (const id of ro.organelleIds) {
-				const org = organelleById.get(id)
-				if (org && org.typeId === typeId) {
-					const orgAngle = Math.atan2(
-						org.centroidY - ro.centroidY,
-						org.centroidX - ro.centroidX,
-					)
-					matching.push({ id, angularOffset: orgAngle - velAngle })
-				}
-			}
-			if (matching.length === 0) continue
-
-			// Sort by |angular offset| ascending, then interleave: right, left, right, left...
-			const right = matching
-				.filter((m) => m.angularOffset >= 0)
-				.sort((a, b) => a.angularOffset - b.angularOffset)
-			const left = matching
-				.filter((m) => m.angularOffset < 0)
-				.sort((a, b) => -a.angularOffset + b.angularOffset)
-			const visualOrder: number[] = []
-			const maxLen = Math.max(right.length, left.length)
-			for (let i = 0; i < maxLen; i++) {
-				if (i < right.length) visualOrder.push(right[i].id)
-				if (i < left.length) visualOrder.push(left[i].id)
-			}
-
-			// Round-robin: wrap subdivisionIndex by this organism's local count
-			const targetOrgId = visualOrder[subdivisionIndex % visualOrder.length]
-			const org = organelleById.get(targetOrgId)
-			if (org) allIndices.push(new Uint32Array(org.particleIndices))
-		}
-
-		if (allIndices.length === 0) return null
-
-		// Concatenate all particle indices
-		const totalLen = allIndices.reduce((s, a) => s + a.length, 0)
-		const result = new Uint32Array(totalLen)
-		let offset = 0
-		for (const arr of allIndices) {
-			result.set(arr, offset)
-			offset += arr.length
-		}
-		return result
-	}
-
-	/**
-	 * Compute per-particle radius scale from active organelle pulses and upload to GPU.
-	 * Uses the same pluck envelope shape as the audio: fast attack, quick decay, quadratic release.
-	 * Particle indices are snapshotted at trigger time so detection changes don't reset the pulse.
-	 */
-	private uploadRadiusScales() {
+	/** Fill the per-particle radius-scale buffer. Applies a decaying pulse
+	 *  envelope to every particle whose organelle triggered a note recently
+	 *  (via activeMusicPulses, populated in the animate loop from
+	 *  music.tick's formation events). */
+	uploadRadiusScales() {
 		const device = this.device!
 		const buf = this.radiusScaleBuffer
 		if (!buf) return
@@ -4465,64 +3154,42 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		const scales = new Float32Array(n)
 		scales.fill(1.0)
 
-		const now = performance.now() / 1000
-		if (this.activePulses.size > 0) {
-			const expired: string[] = []
-			for (const [key, pulse] of this.activePulses) {
+		if (this.activeMusicPulses.size > 0) {
+			const now = performance.now() / 1000
+			const pulseScale = this.getEffectiveParams().pulseScale
+			const expired: number[] = []
+			for (const [typeId, pulse] of this.activeMusicPulses) {
 				const elapsed = now - pulse.startTime
 				if (elapsed >= pulse.duration) {
-					expired.push(key)
+					expired.push(typeId)
 					continue
 				}
-
-				// Envelope matching audio (§3.2): brightness follows envelope curve
+				// Envelope matches the audio: fast ~30 ms attack, then a slow
+				// exponential decay over `duration`. Both computed relative
+				// to elapsed / duration so shorter notes pulse faster.
 				const x = elapsed / pulse.duration
-				let envelope: number
-				if (pulse.envelopeLut) {
-					// Manual envelope: sample from LUT
-					const idx = Math.min(
-						pulse.envelopeLut.length - 1,
-						Math.floor(x * (pulse.envelopeLut.length - 1)),
-					)
-					envelope = pulse.envelopeLut[idx]
+				const attackFrac = Math.min(0.15, 0.03 / pulse.duration)
+				let env: number
+				if (x < attackFrac) {
+					env = x / attackFrac
 				} else {
-					// ADSR envelope
-					const aEnd = pulse.attackFrac
-					const dEnd = aEnd + pulse.decayFrac
-					const sEnd = dEnd + pulse.sustainFrac
-					if (x < aEnd) {
-						envelope = aEnd > 0 ? pulse.peakLevel * (x / aEnd) : pulse.peakLevel
-					} else if (x < dEnd) {
-						const t = (x - aEnd) / (dEnd - aEnd)
-						envelope =
-							pulse.peakLevel - (pulse.peakLevel - pulse.sustainLevel) * t
-					} else if (x < sEnd) {
-						envelope = pulse.sustainLevel
-					} else {
-						const t = (x - sEnd) / (1.0 - sEnd)
-						envelope = pulse.sustainLevel * (1 - t) * (1 - t)
-					}
+					const decayX = (x - attackFrac) / (1 - attackFrac)
+					env = Math.exp(-decayX * 5)
 				}
-
-				// Scale: 1.0 at rest, up to (1.0 + pulseScale) at peak
-				const scale = 1.0 + envelope * this.getEffectiveParams().pulseScale
-
-				// Apply to snapshotted particle indices
-				for (let pi = 0; pi < pulse.particleIndices.length; pi++) {
-					const idx = pulse.particleIndices[pi]
-					if (idx < n && scale > scales[idx]) {
-						scales[idx] = scale
-					}
+				const scale = 1 + env * pulseScale
+				const idxs = pulse.particleIndices
+				for (let i = 0; i < idxs.length; i++) {
+					const idx = idxs[i]
+					if (idx < n && scale > scales[idx]) scales[idx] = scale
 				}
 			}
-
-			for (const key of expired) this.activePulses.delete(key)
+			for (const typeId of expired) this.activeMusicPulses.delete(typeId)
 		}
 
 		device.queue.writeBuffer(buf, 0, scales.buffer, 0, n * 4)
 	}
 
-	private uploadOrganismCentroids(frame: DetectionFrame) {
+	uploadOrganismCentroids(frame: DetectionFrame) {
 		const organelles = frame.organelles
 		const count = Math.min(organelles.length, 256)
 		this.organismCentroidCount = count
@@ -4581,7 +3248,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	/** Extrapolate organism centroids forward and upload to GPU — called every frame */
-	private extrapolateOrganismCentroids() {
+	extrapolateOrganismCentroids() {
 		const device = this.device
 		const buf = this.organismCentroidBuffer
 		const snap = this.organismCentroidSnapshot
@@ -4600,8 +3267,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		for (let i = 0; i < snap.length; i++) {
 			const s = snap[i]
 			const off = i * 4
-			f32[off + 0] = ((s.cx + s.vx * dt) % w + w) % w
-			f32[off + 1] = ((s.cy + s.vy * dt) % h + h) % h
+			f32[off + 0] = (((s.cx + s.vx * dt) % w) + w) % w
+			f32[off + 1] = (((s.cy + s.vy * dt) % h) + h) % h
 			f32[off + 2] = radius
 			// Pack: bits 0-7 = osmId, bits 8-15 = depth rank
 			const depthRank = this.organismDepthRanks.get(s.id) ?? 0
@@ -4623,10 +3290,10 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				const b = snap[bi]
 				const off = i * 8 // 32 bytes = 8 floats/u32s
 				// Use toroidal delta so lines connect across the boundary correctly
-				const ax = ((a.cx + a.vx * dt) % w + w) % w
-				const ay = ((a.cy + a.vy * dt) % h + h) % h
-				const bx = ax + toroidalDelta(ax, ((b.cx + b.vx * dt) % w + w) % w, w)
-				const by = ay + toroidalDelta(ay, ((b.cy + b.vy * dt) % h + h) % h, h)
+				const ax = (((a.cx + a.vx * dt) % w) + w) % w
+				const ay = (((a.cy + a.vy * dt) % h) + h) % h
+				const bx = ax + toroidalDelta(ax, (((b.cx + b.vx * dt) % w) + w) % w, w)
+				const by = ay + toroidalDelta(ay, (((b.cy + b.vy * dt) % h) + h) % h, h)
 				lineF32[off + 0] = ax
 				lineF32[off + 1] = ay
 				lineF32[off + 2] = bx
@@ -4643,7 +3310,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	/** Snapshot organism-level centroids (averaged from constituent organelles) */
-	private uploadOsmLevelCentroids(frame: DetectionFrame) {
+	uploadOsmLevelCentroids(frame: DetectionFrame) {
 		const organelleById = new Map<
 			number,
 			{ centroidX: number; centroidY: number; avgVelX: number; avgVelY: number }
@@ -4687,7 +3354,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	/** Extrapolate organism-level centroids forward and upload to GPU — called every frame */
-	private extrapolateOsmLevelCentroids() {
+	extrapolateOsmLevelCentroids() {
 		const device = this.device
 		const buf = this.osmLevelCentroidBuffer
 		const snap = this.osmLevelCentroidSnapshot
@@ -4706,8 +3373,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		for (let i = 0; i < snap.length; i++) {
 			const s = snap[i]
 			const off = i * 4
-			f32[off + 0] = ((s.cx + s.vx * dt) % w + w) % w
-			f32[off + 1] = ((s.cy + s.vy * dt) % h + h) % h
+			f32[off + 0] = (((s.cx + s.vx * dt) % w) + w) % w
+			f32[off + 1] = (((s.cy + s.vy * dt) % h) + h) % h
 			f32[off + 2] = radius
 			u32[off + 3] = s.id
 		}
@@ -4715,7 +3382,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		device.queue.writeBuffer(buf, 0, data)
 	}
 
-	private uploadQuadParams() {
+	uploadQuadParams() {
 		const device = this.device!
 		const params = this.getActivePostParams()
 		const data = new Float32Array(8) // padded to 32 bytes
@@ -4727,9 +3394,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		device.queue.writeBuffer(this.quadParamsBuffer!, 0, data)
 	}
 
-
-
-	private uploadFalloffLUT(lut?: Float32Array) {
+	uploadFalloffLUT(lut?: Float32Array) {
 		const device = this.device
 		if (!device || !this.falloffTexture) return
 		const data = lut ?? this.curveEditor?.getLUT()
@@ -4750,7 +3415,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	/*  rebuildBuffers — called when particle count/colors change via UI */
 	/* ================================================================ */
 
-	private rebuildBuffers() {
+	rebuildBuffers() {
 		this.count = this.particles.length
 		this.particleBufferDirty = true
 		this.forceMatrixDirty = true
@@ -4760,7 +3425,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	/** Write only color (and type-id) fields into the GPU buffers,
 	 *  leaving positions and velocities untouched so the simulation
 	 *  continues from its current state. */
-	private uploadParticleColors() {
+	uploadParticleColors() {
 		const device = this.device!
 		const n = this.count
 		const types = this.getTypeIds()
@@ -4794,7 +3459,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 	/** Write a contiguous range of CPU particles to both GPU buffers.
 	 *  Used when appending new particles — existing GPU data is untouched. */
-	private uploadParticleRange(startIdx: number, count: number) {
+	uploadParticleRange(startIdx: number, count: number) {
 		if (count <= 0) return
 		const device = this.device!
 		const types = this.getTypeIds()
@@ -4829,7 +3494,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 	/** Remove particles at the given indices using swap-and-shrink.
 	 *  Preserves GPU-evolved positions for all surviving particles. */
-	private removeParticlesByIndices(indices: number[]) {
+	removeParticlesByIndices(indices: number[]) {
 		if (indices.length === 0) return
 		const device = this.device!
 		const staging = this.particleStagingBuffer!
@@ -4877,43 +3542,6 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 	/*  getWindows – floating window definitions                         */
 	/* ================================================================ */
 
-	/** Shared helper: create collapsible section */
-	private makeSection(
-		title: string,
-		defaultOpen: boolean,
-	): { section: HTMLElement; body: HTMLElement } {
-		const section = document.createElement("div")
-		section.className = "settings-section" + (defaultOpen ? " open" : "")
-		section.dataset.section = title
-
-		const header = document.createElement("div")
-		header.className = "settings-section-header"
-		header.textContent = title
-		header.addEventListener("click", () => section.classList.toggle("open"))
-		section.appendChild(header)
-
-		const body = document.createElement("div")
-		body.className = "settings-section-body"
-		section.appendChild(body)
-
-		return { section, body }
-	}
-
-	private getOpenSections(container: HTMLElement): Set<string> {
-		const open = new Set<string>()
-		for (const el of container.querySelectorAll(".settings-section.open")) {
-			const name = (el as HTMLElement).dataset.section
-			if (name) open.add(name)
-		}
-		return open
-	}
-
-	private restoreOpenSections(container: HTMLElement, open: Set<string>) {
-		for (const el of container.querySelectorAll(".settings-section")) {
-			const name = (el as HTMLElement).dataset.section
-			if (name && open.has(name)) (el as HTMLElement).classList.add("open")
-		}
-	}
 
 	getWindows(): WindowDefinition[] {
 		return [
@@ -4925,7 +3553,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				defaultVisible: true,
 				defaultPosition: { x: 12, y: 60 },
 				defaultWidth: 280,
-				build: (c) => this.buildDisplayWindow(c),
+				build: (c) => buildDisplayWindow(this, c),
 			},
 			{
 				id: "physics",
@@ -4935,7 +3563,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				defaultVisible: false,
 				defaultPosition: { x: 12, y: 300 },
 				defaultWidth: 280,
-				build: (c) => this.buildPhysicsWindow(c),
+				build: (c) => buildPhysicsWindow(this, c),
 			},
 			{
 				id: "particles",
@@ -4945,7 +3573,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				defaultVisible: false,
 				defaultPosition: { x: 300, y: 60 },
 				defaultWidth: 280,
-				build: (c) => this.buildParticlesWindow(c),
+				build: (c) => buildParticlesWindow(this, c),
 			},
 			{
 				id: "music",
@@ -4955,7 +3583,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				defaultVisible: false,
 				defaultPosition: { x: 300, y: 300 },
 				defaultWidth: 280,
-				build: (c) => this.buildMusicWindow(c),
+				build: (c) => buildMusicWindow(this, c),
 			},
 			{
 				id: "detection",
@@ -4965,7 +3593,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				defaultVisible: false,
 				defaultPosition: { x: 600, y: 60 },
 				defaultWidth: 280,
-				build: (c) => this.buildDetectionWindow(c),
+				build: (c) => buildDetectionWindow(this, c),
 			},
 			{
 				id: "shaders",
@@ -4975,1980 +3603,12 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 				defaultVisible: false,
 				defaultPosition: { x: 600, y: 300 },
 				defaultWidth: 280,
-				build: (c) => this.buildShadersWindow(c),
+				build: (c) => buildShadersWindow(this, c),
 			},
 		]
 	}
 
-	/* ================================================================ */
-	/*  Window builders                                                  */
-	/* ================================================================ */
-
-	private buildDisplayWindow(container: HTMLElement) {
-		// Viewport
-		const viewport = this.makeSection("Viewport", true)
-
-		viewport.body.appendChild(
-			createNumberGroup({
-				label: "Scale",
-				value: this.scale,
-				setting: "scale",
-				min: 0.1,
-				max: 5,
-				step: 0.1,
-				suffix: "x",
-				onInput: (v) => {
-					this.scale = v
-				},
-			}),
-		)
-
-		const toggleGroup = document.createElement("div")
-		toggleGroup.className = "control-group"
-		const toggleLabel = document.createElement("label")
-		toggleLabel.textContent = "Show Particles"
-		toggleGroup.appendChild(toggleLabel)
-		const checkbox = document.createElement("input")
-		checkbox.type = "checkbox"
-		checkbox.checked = this.showCircleOverlay
-		checkbox.dataset.setting = "showParticles"
-		checkbox.addEventListener("change", () => {
-			this.showCircleOverlay = checkbox.checked
-		})
-		toggleGroup.appendChild(checkbox)
-		viewport.body.appendChild(toggleGroup)
-
-		container.appendChild(viewport.section)
-
-		// Particle Appearance
-		const appearance = this.makeSection("Particle Appearance", true)
-
-		appearance.body.appendChild(
-			createNumberGroup({
-				label: "Radius",
-				value: this.pointSize,
-				setting: "radius",
-				min: 2,
-				step: 1,
-				suffix: "px",
-				onInput: (v) => {
-					this.pointSize = v
-					this.uploadRenderParams()
-				},
-			}),
-		)
-
-		appearance.body.appendChild(
-			createNumberGroup({
-				label: "Pulse Scale",
-				value: this.pulseScale,
-				setting: "pulseScale",
-				min: 0.1,
-				step: 0.1,
-				suffix: "x",
-				onInput: (v) => {
-					this.pulseScale = v
-				},
-			}),
-		)
-
-		container.appendChild(appearance.section)
-	}
-
-	private buildPhysicsWindow(container: HTMLElement) {
-		// Pause toggle
-		const pauseGroup = document.createElement("div")
-		pauseGroup.className = "control-group"
-		const pauseLabel = document.createElement("label")
-		pauseLabel.textContent = "Pause Simulation"
-		pauseGroup.appendChild(pauseLabel)
-		const pauseCheckbox = document.createElement("input")
-		pauseCheckbox.type = "checkbox"
-		pauseCheckbox.checked = false
-		pauseCheckbox.dataset.setting = "simPaused"
-		pauseCheckbox.addEventListener("change", () => {
-			window.dispatchEvent(
-				new CustomEvent("sim-pause", {
-					detail: { paused: pauseCheckbox.checked },
-				}),
-			)
-		})
-		window.addEventListener("sim-pause", ((
-			e: CustomEvent<{ paused: boolean }>,
-		) => {
-			pauseCheckbox.checked = e.detail.paused
-		}) as EventListener)
-		pauseGroup.appendChild(pauseCheckbox)
-		container.appendChild(pauseGroup)
-
-		// Auto Balance toggle (top-level, like Enable Sound in music)
-		const autoBalanceGroup = document.createElement("div")
-		autoBalanceGroup.className = "control-group"
-		const autoBalanceLabel = document.createElement("label")
-		autoBalanceLabel.textContent = "Auto Balance"
-		autoBalanceGroup.appendChild(autoBalanceLabel)
-		const autoBalanceCheckbox = document.createElement("input")
-		autoBalanceCheckbox.type = "checkbox"
-		autoBalanceCheckbox.checked = this.autoBalanceEnabled
-		autoBalanceCheckbox.dataset.setting = "autoBalance"
-		autoBalanceGroup.appendChild(autoBalanceCheckbox)
-		container.appendChild(autoBalanceGroup)
-
-		// Read-only summary shown when auto-balance is ON
-		const autoBalanceSummary = document.createElement("div")
-		autoBalanceSummary.className = "auto-balance-summary"
-		this._autoBalanceSummary = autoBalanceSummary
-		this.renderAutoBalanceSummary()
-		container.appendChild(autoBalanceSummary)
-
-		// Container for all manual force sections (hidden when auto-balance ON)
-		const forceSliders = document.createElement("div")
-
-		// Force Reach
-		const forceReach = this.makeSection("Force Reach", false)
-
-		const affectRadiusEl = createNumberGroup({
-			label: "Affect Radius",
-			value: this.affectRadius,
-			setting: "affectRadius",
-			min: 1,
-			step: 1,
-			suffix: "px",
-			onInput: (v) => {
-				this.affectRadius = v
-			},
-		})
-		this._affectRadiusInput = affectRadiusEl
-		forceReach.body.appendChild(affectRadiusEl)
-
-		const forceRepelDistanceEl = createNumberGroup({
-			label: "Force/Repel Distance",
-			value: this.forceRepelDistance,
-			setting: "forceRepelDistance",
-			min: 0,
-			step: 1,
-			suffix: "px",
-			onInput: (v) => {
-				this.forceRepelDistance = v
-			},
-		})
-		this._forceRepelDistanceInput = forceRepelDistanceEl
-		forceReach.body.appendChild(forceRepelDistanceEl)
-
-		// Falloff curve editor (belongs with reach/distance)
-		const falloffGroup = document.createElement("div")
-		falloffGroup.className = "control-group control-group-column"
-		const falloffLabel = document.createElement("label")
-		falloffLabel.textContent = "Falloff Curve"
-		falloffGroup.appendChild(falloffLabel)
-		const falloffHint = document.createElement("div")
-		falloffHint.className = "control-hint"
-		falloffHint.textContent =
-			"Dbl-click: add/remove \u2022 Right-click: remove \u2022 Drag handles"
-		falloffGroup.appendChild(falloffHint)
-
-		this.curveEditor = new CurveEditor(falloffGroup)
-		const hiddenCurveInput = document.createElement("input")
-		hiddenCurveInput.type = "hidden"
-		hiddenCurveInput.dataset.setting = "falloffCurve"
-		hiddenCurveInput.value = this.curveEditor.toJSON()
-		this.curveEditor.onChange((lut) => {
-			this.uploadFalloffLUT(lut)
-			hiddenCurveInput.value = this.curveEditor!.toJSON()
-			hiddenCurveInput.dispatchEvent(new Event("input", { bubbles: true }))
-		})
-		hiddenCurveInput.addEventListener("input", () => {
-			if (
-				this.curveEditor &&
-				hiddenCurveInput.value !== this.curveEditor.toJSON()
-			) {
-				this.curveEditor.fromJSON(hiddenCurveInput.value)
-				this.uploadFalloffLUT()
-			}
-		})
-		falloffGroup.appendChild(hiddenCurveInput)
-		forceReach.body.appendChild(falloffGroup)
-
-		forceSliders.appendChild(forceReach.section)
-
-		// Force Strength
-		const forceStrength = this.makeSection("Force Strength", false)
-
-		const forceStrengthVu = document.createElement("vu-meter") as VuMeter
-		const baseStrengthEl = createNumberGroup({
-			label: "Force Strength",
-			value: this.baseStrength,
-			setting: "baseStrength",
-			min: 1,
-			step: 1,
-			onInput: (v) => {
-				this.baseStrength = v
-				forceStrengthVu.value = Math.min(1, v / 500)
-			},
-		})
-		baseStrengthEl.appendChild(forceStrengthVu)
-		forceStrengthVu.value = Math.min(1, this.baseStrength / 500)
-		this._forceStrengthVu = forceStrengthVu
-		this._baseStrengthInput = baseStrengthEl
-		forceStrength.body.appendChild(baseStrengthEl)
-
-		const repelStrengthVu = document.createElement("vu-meter") as VuMeter
-		const repelStrengthEl = createNumberGroup({
-			label: "Repel Strength",
-			value: this.repelStrength,
-			setting: "repelStrength",
-			min: 0,
-			step: 1,
-			onInput: (v) => {
-				this.repelStrength = v
-				repelStrengthVu.value = Math.min(1, v / 500)
-			},
-		})
-		repelStrengthEl.appendChild(repelStrengthVu)
-		repelStrengthVu.value = Math.min(1, this.repelStrength / 500)
-		this._repelStrengthVu = repelStrengthVu
-		this._repelStrengthInput = repelStrengthEl
-		forceStrength.body.appendChild(repelStrengthEl)
-
-		forceSliders.appendChild(forceStrength.section)
-
-		// Crowd Density
-		const crowdDensity = this.makeSection("Crowd Density", false)
-
-		const crowdLimitEl = createNumberGroup({
-			label: "Crowd Limit",
-			value: this.crowdLimit,
-			setting: "crowdLimit",
-			min: 1,
-			step: 1,
-			onInput: (v) => {
-				this.crowdLimit = v
-			},
-		})
-		this._crowdLimitInput = crowdLimitEl
-		crowdDensity.body.appendChild(crowdLimitEl)
-
-		const spreadGauge = document.createElement("mini-gauge") as MiniGauge
-		const spreadEl = createNumberGroup({
-			label: "Spread",
-			value: this.spread,
-			setting: "spread",
-			min: 0,
-			max: 100,
-			step: 1,
-			suffix: "%",
-			onInput: (v) => {
-				this.spread = v
-				spreadGauge.value = v / 100
-			},
-		})
-		spreadEl.appendChild(spreadGauge)
-		spreadGauge.value = this.spread / 100
-		this._spreadGauge = spreadGauge
-		this._spreadInput = spreadEl
-		crowdDensity.body.appendChild(spreadEl)
-
-		forceSliders.appendChild(crowdDensity.section)
-
-		// Toggle visibility based on auto-balance state
-		const updateForceVisibility = () => {
-			forceSliders.style.display = this.autoBalanceEnabled ? "none" : ""
-			autoBalanceSummary.style.display = this.autoBalanceEnabled ? "" : "none"
-		}
-		updateForceVisibility()
-
-		autoBalanceCheckbox.addEventListener("change", () => {
-			this.autoBalanceEnabled = autoBalanceCheckbox.checked
-			updateForceVisibility()
-			if (this.autoBalanceEnabled) {
-				this.predictionDirty = true
-			}
-		})
-
-		container.appendChild(forceSliders)
-
-		// Speed Limiter — always visible, independent of auto-balance
-		const speedLimiter = this.makeSection("Speed Limiter", false)
-
-		const maxSpeedEl = createNumberGroup({
-			label: "Max Speed",
-			value: this.maxSpeedPct,
-			setting: "maxSpeedPct",
-			min: 1,
-			max: 100,
-			step: 0.1,
-			suffix: "%",
-			onInput: (v) => {
-				this.maxSpeedPct = v
-			},
-		})
-		speedLimiter.body.appendChild(maxSpeedEl)
-
-		container.appendChild(speedLimiter.section)
-	}
-
-	private buildParticlesWindow(container: HTMLElement) {
-		this._particlesContainer = container
-		// --- Species section ---
-		const typesAccordion = this.makeSection("Species", false)
-
-		const typeMap = new Map<string, CustomParticle[]>()
-		for (const type of this.groupNames.keys()) {
-			typeMap.set(type, [])
-		}
-		for (const p of this.particles) {
-			let list = typeMap.get(p.groupId)
-			if (!list) {
-				list = []
-				typeMap.set(p.groupId, list)
-			}
-			list.push(p)
-		}
-
-		const typesSection = document.createElement("div")
-		typesSection.className = "particle-types-section"
-
-		const rebuildParticles = (c: HTMLElement) => this.buildParticlesWindow(c)
-		for (const [type, members] of typeMap) {
-			this.buildTypeRow(
-				typesSection,
-				container,
-				type,
-				members,
-				rebuildParticles,
-			)
-		}
-
-		// Randomize counts button
-		const randomizeCountsBtn = document.createElement("button")
-		randomizeCountsBtn.className = "force-matrix-randomize"
-		randomizeCountsBtn.textContent = "Randomize"
-		randomizeCountsBtn.title = "Randomize particle counts"
-		randomizeCountsBtn.addEventListener("click", () => this.randomizeCounts())
-		typesSection.appendChild(randomizeCountsBtn)
-
-		const autoCountsToggle = document.createElement("div")
-		autoCountsToggle.className = "control-group"
-		const autoCountsLabel = document.createElement("label")
-		autoCountsLabel.textContent = "Auto Randomize"
-		autoCountsToggle.appendChild(autoCountsLabel)
-		const autoCountsCheckbox = document.createElement("input")
-		autoCountsCheckbox.type = "checkbox"
-		autoCountsCheckbox.checked = this.autoRandomizeCountsEnabled
-		autoCountsCheckbox.dataset.setting = "autoRandomizeCounts"
-		autoCountsCheckbox.addEventListener("change", () => {
-			this.autoRandomizeCountsEnabled = autoCountsCheckbox.checked
-		})
-		autoCountsToggle.appendChild(autoCountsCheckbox)
-		typesSection.appendChild(autoCountsToggle)
-
-		// Add Particle button
-		const addParticleBtn = document.createElement("button")
-		addParticleBtn.className = "add-particle-btn"
-		addParticleBtn.textContent = "+"
-		addParticleBtn.title = "Add particle type"
-		addParticleBtn.addEventListener("click", () => {
-			const newType = this.generateGroupId()
-			const newName = this.generateName()
-			this.groupNames.set(newType, newName)
-			// Generate a random saturated color (HSL with S=0.7, L=0.6)
-			const hue = Math.random()
-			const newColor: [number, number, number] = (() => {
-				const s = 0.7,
-					l = 0.6
-				const q = l + s - l * s
-				const p = 2 * l - q
-				const hue2rgb = (t: number) => {
-					if (t < 0) t += 1
-					if (t > 1) t -= 1
-					if (t < 1 / 6) return p + (q - p) * 6 * t
-					if (t < 1 / 2) return q
-					if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
-					return p
-				}
-				return [hue2rgb(hue + 1 / 3), hue2rgb(hue), hue2rgb(hue - 1 / 3)]
-			})()
-			this.groupColors.set(newType, newColor)
-
-			const newCount = Math.min(200, MAX_PARTICLES - this.particles.length)
-			if (newCount <= 0) return
-			const startIdx = this.particles.length
-			for (let i = 0; i < newCount; i++) {
-				this.particles.push(
-					new CustomParticle(
-						Math.random() * this.width,
-						Math.random() * this.height,
-						newType,
-						[newColor[0], newColor[1], newColor[2]],
-					),
-				)
-			}
-			this.count = this.particles.length
-			this.uploadParticleRange(startIdx, newCount)
-			this.forceMatrixDirty = true
-
-			const types = this.getTypeIds()
-			this.forceMatrix = resizeMatrix(this.forceMatrix, types)
-
-			// Rebuild this window, preserving accordion states
-			const openSections = this.getOpenSections(container)
-			container.innerHTML = ""
-			this.buildParticlesWindow(container)
-			this.restoreOpenSections(container, openSections)
-			container.dispatchEvent(new Event("change", { bubbles: true }))
-		})
-		typesSection.appendChild(addParticleBtn)
-
-		typesAccordion.body.appendChild(typesSection)
-		container.appendChild(typesAccordion.section)
-
-		// --- Interaction Matrix section ---
-		const matrixAccordion = this.makeSection("Interaction Matrix", false)
-		this.buildMatrixUI(matrixAccordion.body, container)
-
-		const hiddenMatrixInput = document.createElement("input")
-		hiddenMatrixInput.type = "hidden"
-		hiddenMatrixInput.dataset.setting = "forceMatrix"
-		hiddenMatrixInput.value = matrixToJSON(this.forceMatrix)
-		hiddenMatrixInput.addEventListener("input", () => {
-			const types = this.getTypeIds()
-			const restored = matrixFromJSON(hiddenMatrixInput.value, types)
-			if (matrixToJSON(restored) !== matrixToJSON(this.forceMatrix)) {
-				this.forceMatrix = restored
-				this.forceMatrixDirty = true
-				const matrixContainer = matrixAccordion.body.querySelector(
-					".force-matrix-container",
-				)
-				if (matrixContainer) {
-					matrixContainer.remove()
-					this.buildMatrixUI(matrixAccordion.body)
-				}
-			}
-		})
-		matrixAccordion.body.appendChild(hiddenMatrixInput)
-
-		container.appendChild(matrixAccordion.section)
-	}
-
-	private buildMusicWindow(container: HTMLElement) {
-		// --- Status Bar (always visible, not collapsible) ---
-		const statusBar = document.createElement("div")
-
-		const soundToggleGroup = document.createElement("div")
-		soundToggleGroup.className = "control-group"
-		const soundToggleLabel = document.createElement("label")
-		soundToggleLabel.textContent = "Enable Sound"
-		soundToggleGroup.appendChild(soundToggleLabel)
-		const soundCheckbox = document.createElement("input")
-		soundCheckbox.type = "checkbox"
-		soundCheckbox.checked = false
-		soundCheckbox.dataset.setting = "soundEnabled"
-		soundCheckbox.addEventListener("change", () => {
-			if (soundCheckbox.checked) {
-				this.audioGraph.enable()
-				this.resetBarGrid()
-			} else {
-				this.audioGraph.disable()
-			}
-		})
-		soundToggleGroup.appendChild(soundCheckbox)
-		statusBar.appendChild(soundToggleGroup)
-
-		// Wire the bar-visualizer play button to the same enable/disable logic
-		onPlayToggle((playing) => {
-			soundCheckbox.checked = playing
-			soundCheckbox.dispatchEvent(new Event("change"))
-			setPlayState(playing)
-		})
-		// Sync play button when checkbox changes directly
-		soundCheckbox.addEventListener("change", () => {
-			setPlayState(soundCheckbox.checked)
-		})
-
-		// Wire the bar-visualizer inputs to settings
-		onBpmChange((bpm) => {
-			this.musicBpm = bpm
-			this.resetBarGrid()
-			const inp = document.querySelector<HTMLInputElement>('input[data-setting="musicBpm"]')
-			if (inp) inp.value = String(bpm)
-			if (this._bpmGauge) this._bpmGauge.value = (bpm - 20) / 280
-		})
-		onCyclesChange((cycles) => {
-			this.cyclesBeforeRandomize = cycles
-			const inp = document.querySelector<HTMLInputElement>('input[data-setting="cyclesBeforeRandomize"]')
-			if (inp) inp.value = String(cycles)
-		})
-		setCycles(this.cyclesBeforeRandomize)
-		onBarsPerMelodyChange((bars) => {
-			this.barsPerMelody = bars
-			const inp = document.querySelector<HTMLInputElement>('input[data-setting="barsPerMelody"]')
-			if (inp) inp.value = String(bars)
-		})
-		setBarsPerMelody(this.barsPerMelody)
-		onNiceModeChange((nice) => {
-			this.preferNiceModes = nice
-			const cb = document.querySelector<HTMLInputElement>('input[data-setting="preferNiceModes"]')
-			if (cb) cb.checked = nice
-		})
-		setNiceMode(this.preferNiceModes)
-
-		const scrubToggleGroup = document.createElement("div")
-		scrubToggleGroup.className = "control-group"
-		const scrubToggleLabel = document.createElement("label")
-		scrubToggleLabel.textContent = "Show Scrub Bar"
-		scrubToggleGroup.appendChild(scrubToggleLabel)
-		const scrubCheckbox = document.createElement("input")
-		scrubCheckbox.type = "checkbox"
-		scrubCheckbox.checked = true
-		scrubCheckbox.dataset.setting = "showScrubBar"
-		scrubCheckbox.addEventListener("change", () => {
-			if (scrubCheckbox.checked) showBarVisualizer()
-			else hideBarVisualizer()
-		})
-		scrubToggleGroup.appendChild(scrubCheckbox)
-		statusBar.appendChild(scrubToggleGroup)
-		// Sync initial checked state with bar visualizer
-		if (scrubCheckbox.checked) showBarVisualizer()
-
-		const toggleSeparator = document.createElement("div")
-		toggleSeparator.style.height = "8px"
-		statusBar.appendChild(toggleSeparator)
-
-		const NOTE_NAMES = [
-			"C",
-			"C#",
-			"D",
-			"D#",
-			"E",
-			"F",
-			"F#",
-			"G",
-			"G#",
-			"A",
-			"A#",
-			"B",
-		] as const
-		const midiToNoteName = (midi: number) => {
-			const note = NOTE_NAMES[((midi % 12) + 12) % 12]
-			const octave = Math.floor(midi / 12) - 1
-			return `${note}${octave}`
-		}
-
-		const makeStatusCell = (label: string) => {
-			const cell = document.createElement("div")
-			cell.className = "status-cell"
-			const lbl = document.createElement("div")
-			lbl.className = "status-cell-label"
-			lbl.textContent = label
-			const val = document.createElement("div")
-			val.className = "status-cell-value"
-			val.textContent = "\u2014"
-			cell.appendChild(lbl)
-			cell.appendChild(val)
-			return { cell, val }
-		}
-
-		const modeCell = makeStatusCell("Mode")
-		statusBar.appendChild(modeCell.cell)
-
-		const statusGrid = document.createElement("div")
-		statusGrid.className = "status-grid"
-		const rootCell = makeStatusCell("Root")
-		const stabilityCell = makeStatusCell("Stability")
-		const stabilityBars = document.createElement(
-			"stability-bars",
-		) as StabilityBars
-		stabilityCell.val.appendChild(stabilityBars)
-		this._stabilityBars = stabilityBars
-		statusGrid.appendChild(rootCell.cell)
-		statusGrid.appendChild(stabilityCell.cell)
-		statusBar.appendChild(statusGrid)
-
-		setInterval(() => {
-			if (!this.musicState) {
-				modeCell.val.textContent = "\u2014"
-				rootCell.val.textContent = "\u2014"
-				stabilityBars.value = 0
-				return
-			}
-			modeCell.val.textContent = this.musicState.currentMode.name
-			rootCell.val.textContent = midiToNoteName(this.musicState.currentRootMidi)
-			const s = this.musicState.netStability
-			stabilityCell.val.textContent = s.toFixed(2)
-			stabilityBars.value = s
-			const r = Math.round(255 * (1 - s))
-			const g = Math.round(200 * s)
-			stabilityCell.val.style.color = `rgb(${r},${g},100)`
-		}, 500)
-
-		container.appendChild(statusBar)
-
-		// Mix
-		const mix = this.makeSection("Mix", false)
-		const volumeVu = document.createElement("vu-meter") as VuMeter
-		const volumeEl = createNumberGroup({
-			label: "Volume",
-			value: 50,
-			setting: "soundVolume",
-			min: 0,
-			max: 100,
-			step: 1,
-			suffix: "%",
-			onInput: (v) => {
-				this.audioGraph.setVolume(v / 100)
-				volumeVu.value = v / 100
-			},
-		})
-		volumeEl.appendChild(volumeVu)
-		volumeVu.value = 0.5
-		this._volumeVu = volumeVu
-		mix.body.appendChild(volumeEl)
-		const multiplierInput = createNumberGroup({
-			label: "Volume Multiplier",
-			value: 1,
-			setting: "soundVolumeMultiplier",
-			min: 0.1,
-			step: 0.1,
-			suffix: "x",
-			onInput: (v) => {
-				const clamped = Math.max(0.1, v)
-				this.audioGraph.setVolumeMultiplier(clamped)
-			},
-		})
-		mix.body.appendChild(multiplierInput)
-
-		container.appendChild(mix.section)
-
-		// Tempo & Meter
-		const tempoMeter = this.makeSection("Tempo & Meter", false)
-		const bpmGauge = document.createElement("mini-gauge") as MiniGauge
-		const bpmEl = createNumberGroup({
-			label: "BPM",
-			value: this.musicBpm,
-			setting: "musicBpm",
-			min: 20,
-			max: 300,
-			step: 5,
-			suffix: "bpm",
-			onInput: (v) => {
-				this.musicBpm = v
-				this.resetBarGrid()
-				bpmGauge.value = (v - 20) / 280
-			},
-		})
-		bpmEl.appendChild(bpmGauge)
-		bpmGauge.value = (this.musicBpm - 20) / 280
-		this._bpmGauge = bpmGauge
-		tempoMeter.body.appendChild(bpmEl)
-
-		tempoMeter.body.appendChild(
-			createNumberGroup({
-				label: "Bars per Melody",
-				value: this.barsPerMelody,
-				setting: "barsPerMelody",
-				min: 1,
-				max: 16,
-				step: 1,
-				suffix: "bars",
-				onInput: (v) => {
-					this.barsPerMelody = v
-					setBarsPerMelody(v)
-				},
-			}),
-		)
-
-		const timeMultGroup = document.createElement("div")
-		timeMultGroup.className = "control-group"
-		const timeMultLabel = document.createElement("label")
-		timeMultLabel.textContent = "Time Multiplier"
-		timeMultGroup.appendChild(timeMultLabel)
-		const timeMultRadios = document.createElement("div")
-		timeMultRadios.className = "control-radios"
-		for (const [label, val] of [
-			["0.5x", 0.5],
-			["1x", 1],
-			["2x", 2],
-		] as const) {
-			const radio = document.createElement("input")
-			radio.type = "radio"
-			radio.name = "musicTimeMultiplier"
-			radio.value = String(val)
-			radio.checked = val === this.musicTimeMultiplier
-			radio.dataset.setting = "musicTimeMultiplier"
-			radio.addEventListener("change", () => {
-				this.musicTimeMultiplier = val
-				this.resetBarGrid()
-			})
-			const radioLabel = document.createElement("label")
-			radioLabel.textContent = label
-			radioLabel.prepend(radio)
-			timeMultRadios.appendChild(radioLabel)
-		}
-		timeMultGroup.appendChild(timeMultRadios)
-		tempoMeter.body.appendChild(timeMultGroup)
-
-		tempoMeter.body.appendChild(
-			createNumberGroup({
-				label: "Voice Budget",
-				value: this.voiceBudget,
-				setting: "voiceBudget",
-				min: 8,
-				max: 64,
-				step: 4,
-				suffix: "voices",
-				onInput: (v) => {
-					this.voiceBudget = v
-				},
-			}),
-		)
-		container.appendChild(tempoMeter.section)
-
-		// Harmonic Engine
-		const harmonicEngine = this.makeSection("Harmonic Engine", false)
-		const phaseClock = document.createElement("mini-clock") as MiniClock
-		const phaseRateEl = createNumberGroup({
-			label: "Overtone Phase Rate",
-			value: this.overtonePhaseRate,
-			setting: "overtonePhaseRate",
-			min: 1,
-			max: 16,
-			step: 1,
-			suffix: "bars/phase",
-			onInput: (v) => {
-				this.overtonePhaseRate = v
-			},
-		})
-		phaseRateEl.appendChild(phaseClock)
-		this._phaseClock = phaseClock
-		harmonicEngine.body.appendChild(phaseRateEl)
-		const niceModeGroup = document.createElement("div")
-		niceModeGroup.className = "control-group"
-		const niceModeLabel = document.createElement("label")
-		niceModeLabel.textContent = "Prefer Nice Modes"
-		niceModeGroup.appendChild(niceModeLabel)
-		const niceModeCheckbox = document.createElement("input")
-		niceModeCheckbox.type = "checkbox"
-		niceModeCheckbox.checked = this.preferNiceModes
-		niceModeCheckbox.dataset.setting = "preferNiceModes"
-		niceModeCheckbox.addEventListener("change", () => {
-			this.preferNiceModes = niceModeCheckbox.checked
-			setNiceMode(niceModeCheckbox.checked)
-		})
-		niceModeGroup.appendChild(niceModeCheckbox)
-		harmonicEngine.body.appendChild(niceModeGroup)
-
-		const rootStrategyGroup = document.createElement("div")
-		rootStrategyGroup.className = "control-group"
-		const rootStrategyLabel = document.createElement("label")
-		rootStrategyLabel.textContent = "Root Strategy"
-		rootStrategyGroup.appendChild(rootStrategyLabel)
-		const rootStrategyRadios = document.createElement("div")
-		rootStrategyRadios.className = "control-radios"
-		for (const [label, val] of [
-			["Table", "table"],
-			["Circle of Fifths", "circle-of-fifths"],
-		] as const) {
-			const radio = document.createElement("input")
-			radio.type = "radio"
-			radio.name = "rootStrategy"
-			radio.value = val
-			radio.checked = val === this.rootStrategy
-			radio.dataset.setting = "rootStrategy"
-			radio.addEventListener("change", () => {
-				this.rootStrategy = val
-			})
-			const radioLabel = document.createElement("label")
-			radioLabel.textContent = label
-			radioLabel.prepend(radio)
-			rootStrategyRadios.appendChild(radioLabel)
-		}
-		rootStrategyGroup.appendChild(rootStrategyRadios)
-		harmonicEngine.body.appendChild(rootStrategyGroup)
-
-		container.appendChild(harmonicEngine.section)
-
-		// Melody Envelope
-		const melodyEnvelope = this.makeSection("Melody Envelope", false)
-		const envelopeHint = document.createElement("div")
-		envelopeHint.className = "control-hint"
-		envelopeHint.textContent =
-			"Dbl-click: add/remove \u2022 Right-click: remove \u2022 Drag dividers"
-		melodyEnvelope.body.appendChild(envelopeHint)
-
-		this.envelopeEditor = new EnvelopeEditor(melodyEnvelope.body)
-		const hiddenEnvelopeInput = document.createElement("input")
-		hiddenEnvelopeInput.type = "hidden"
-		hiddenEnvelopeInput.dataset.setting = "envelopeShape"
-		hiddenEnvelopeInput.value = this.envelopeEditor.toJSON()
-		this.envelopeEditor.onChange((shape) => {
-			this.audioGraph.setManualEnvelope(shape)
-			hiddenEnvelopeInput.value = this.envelopeEditor!.toJSON()
-			hiddenEnvelopeInput.dispatchEvent(new Event("input", { bubbles: true }))
-		})
-		this.audioGraph.setManualEnvelope(this.envelopeEditor.getShape())
-		hiddenEnvelopeInput.addEventListener("input", () => {
-			if (
-				this.envelopeEditor &&
-				hiddenEnvelopeInput.value !== this.envelopeEditor.toJSON()
-			) {
-				this.envelopeEditor.fromJSON(hiddenEnvelopeInput.value)
-				this.audioGraph.setManualEnvelope(this.envelopeEditor.getShape())
-			}
-		})
-		melodyEnvelope.body.appendChild(hiddenEnvelopeInput)
-		container.appendChild(melodyEnvelope.section)
-	}
-
-	private buildDetectionWindow(container: HTMLElement) {
-		// Organelle Detection (algorithm parameters only)
-		const organelleDet = this.makeSection("Organelle Detection", true)
-
-		organelleDet.body.appendChild(
-			createNumberGroup({
-				label: "Search Radius",
-				value: this.detectionConfig.proximityRadius,
-				setting: "detProximityRadius",
-				min: 5,
-				max: 200,
-				step: 1,
-				suffix: "px",
-				onInput: (v) => {
-					this.detectionConfig = { ...this.detectionConfig, proximityRadius: v }
-					this.detectionState = null; this.prevFrameWire = null
-				},
-			}),
-		)
-		organelleDet.body.appendChild(
-			createNumberGroup({
-				label: "Coherence",
-				value: this.detectionConfig.coherenceThreshold,
-				setting: "detCoherenceThreshold",
-				min: 1,
-				max: 200,
-				step: 1,
-				suffix: "px",
-				onInput: (v) => {
-					this.detectionConfig = {
-						...this.detectionConfig,
-						coherenceThreshold: v,
-					}
-					this.detectionState = null; this.prevFrameWire = null
-				},
-			}),
-		)
-		organelleDet.body.appendChild(
-			createNumberGroup({
-				label: "Min Size",
-				value: this.detectionConfig.minOrganelleSize,
-				setting: "detMinOrganelleSize",
-				min: 2,
-				max: 50,
-				step: 1,
-				suffix: "particles",
-				onInput: (v) => {
-					this.detectionConfig = {
-						...this.detectionConfig,
-						minOrganelleSize: v,
-					}
-					this.detectionState = null; this.prevFrameWire = null
-				},
-			}),
-		)
-		const latchClock = document.createElement("mini-clock") as MiniClock
-		const latchBeatsEl = createNumberGroup({
-			label: "Latch Beats",
-			value: this.detectionConfig.organelleLatchBeats,
-			setting: "detOrganelleLatchBeats",
-			min: 1,
-			max: 16,
-			step: 1,
-			suffix: "beats",
-			onInput: (v) => {
-				this.detectionConfig = {
-					...this.detectionConfig,
-					organelleLatchBeats: v,
-				}
-				this.detectionState = null; this.prevFrameWire = null
-			},
-		})
-		latchBeatsEl.appendChild(latchClock)
-		this._latchClock = latchClock
-		organelleDet.body.appendChild(latchBeatsEl)
-
-		container.appendChild(organelleDet.section)
-
-		// Organism Detection (algorithm parameters only)
-		const organismDet = this.makeSection("Organism Detection", true)
-
-		organismDet.body.appendChild(
-			createNumberGroup({
-				label: "Search Radius",
-				value: this.detectionConfig.organismProximityRadius,
-				setting: "detOrganismProximityRadius",
-				min: 20,
-				max: 400,
-				step: 10,
-				suffix: "px",
-				onInput: (v) => {
-					this.detectionConfig = {
-						...this.detectionConfig,
-						organismProximityRadius: v,
-					}
-					this.detectionState = null; this.prevFrameWire = null
-				},
-			}),
-		)
-		organismDet.body.appendChild(
-			createNumberGroup({
-				label: "Coherence",
-				value: this.detectionConfig.organismCoherenceThreshold,
-				setting: "detOrganismCoherenceThreshold",
-				min: 10,
-				max: 200,
-				step: 10,
-				suffix: "px",
-				onInput: (v) => {
-					this.detectionConfig = {
-						...this.detectionConfig,
-						organismCoherenceThreshold: v,
-					}
-					this.detectionState = null; this.prevFrameWire = null
-				},
-			}),
-		)
-
-		container.appendChild(organismDet.section)
-
-		// Detection Overlays (all visual toggles and rendering params)
-		const overlays = this.makeSection("Detection Overlays", true)
-
-		// Organelle overlay toggle
-		const orgOverlayGroup = document.createElement("div")
-		orgOverlayGroup.className = "control-group"
-		const orgOverlayLabel = document.createElement("label")
-		orgOverlayLabel.textContent = "Organelle Overlay"
-		orgOverlayGroup.appendChild(orgOverlayLabel)
-		const orgOverlayCheckbox = document.createElement("input")
-		orgOverlayCheckbox.type = "checkbox"
-		orgOverlayCheckbox.checked = this.showOrganelleOverlay
-		orgOverlayCheckbox.dataset.setting = "detShowOrganelleOverlay"
-		orgOverlayCheckbox.addEventListener("change", () => {
-			this.showOrganelleOverlay = orgOverlayCheckbox.checked
-			if (!orgOverlayCheckbox.checked && this.detectionBuffer && this.device) {
-				this.device.queue.writeBuffer(
-					this.detectionBuffer,
-					0,
-					new Uint32Array(this.count),
-				)
-			}
-		})
-		orgOverlayGroup.appendChild(orgOverlayCheckbox)
-		overlays.body.appendChild(orgOverlayGroup)
-
-		// Organism outline toggle
-		const osmOverlayGroup = document.createElement("div")
-		osmOverlayGroup.className = "control-group"
-		const osmOverlayLabel = document.createElement("label")
-		osmOverlayLabel.textContent = "Organism Outline"
-		osmOverlayGroup.appendChild(osmOverlayLabel)
-		const osmOverlayCheckbox = document.createElement("input")
-		osmOverlayCheckbox.type = "checkbox"
-		osmOverlayCheckbox.checked = this.showOrganismOverlay
-		osmOverlayCheckbox.dataset.setting = "detShowOrganismOverlay"
-		osmOverlayCheckbox.addEventListener("change", () => {
-			this.showOrganismOverlay = osmOverlayCheckbox.checked
-		})
-		osmOverlayGroup.appendChild(osmOverlayCheckbox)
-		overlays.body.appendChild(osmOverlayGroup)
-
-		// Organism centroids + connectors toggle
-		const osmCentroidGroup = document.createElement("div")
-		osmCentroidGroup.className = "control-group"
-		const osmCentroidLabel = document.createElement("label")
-		osmCentroidLabel.textContent = "Centroids & Connectors"
-		osmCentroidGroup.appendChild(osmCentroidLabel)
-		const osmCentroidCheckbox = document.createElement("input")
-		osmCentroidCheckbox.type = "checkbox"
-		osmCentroidCheckbox.checked = this.showOrganismCentroids
-		osmCentroidCheckbox.dataset.setting = "detShowOrganismCentroids"
-		osmCentroidCheckbox.addEventListener("change", () => {
-			this.showOrganismCentroids = osmCentroidCheckbox.checked
-			if (!osmCentroidCheckbox.checked) {
-				this.organismCentroidCount = 0
-				this.organismLineCount = 0
-				this.organismLineEdges = []
-			}
-		})
-		osmCentroidGroup.appendChild(osmCentroidCheckbox)
-		overlays.body.appendChild(osmCentroidGroup)
-
-		// Bubble boundary rendering controls
-		overlays.body.appendChild(
-			createNumberGroup({
-				label: "Bubble Threshold",
-				value: this.bubbleThreshold,
-				setting: "detBubbleThreshold",
-				min: 10,
-				max: 150,
-				step: 1,
-				suffix: "px",
-				onInput: (v) => {
-					this.bubbleThreshold = v
-					this.uploadBubbleParams()
-				},
-			}),
-		)
-		overlays.body.appendChild(
-			createNumberGroup({
-				label: "Edge Width",
-				value: this.bubbleEdgeWidth,
-				setting: "detBubbleEdgeWidth",
-				min: 1,
-				max: 10,
-				step: 0.5,
-				suffix: "px",
-				onInput: (v) => {
-					this.bubbleEdgeWidth = v
-					this.uploadBubbleParams()
-				},
-			}),
-		)
-
-		container.appendChild(overlays.section)
-
-		// Ledger
-		this.initLedger()
-	}
-
-	private buildShadersWindow(container: HTMLElement) {
-		// Hidden inputs for shader effect persistence
-		const hiddenParticleEffect = document.createElement("input")
-		hiddenParticleEffect.type = "hidden"
-		hiddenParticleEffect.dataset.setting = "particleEffect"
-		hiddenParticleEffect.value = this.activeParticleEffect.id
-		hiddenParticleEffect.addEventListener("input", () => {
-			if (hiddenParticleEffect.value !== this.activeParticleEffect.id) {
-				this.switchParticleShader(hiddenParticleEffect.value)
-				this.onParticleEffectChanged?.(hiddenParticleEffect.value)
-			}
-		})
-		container.appendChild(hiddenParticleEffect)
-
-		const hiddenPostEffect = document.createElement("input")
-		hiddenPostEffect.type = "hidden"
-		hiddenPostEffect.dataset.setting = "postEffect"
-		hiddenPostEffect.value = this.activePostEffect.id
-		hiddenPostEffect.addEventListener("input", () => {
-			if (hiddenPostEffect.value !== this.activePostEffect.id) {
-				this.switchPostShader(hiddenPostEffect.value)
-				this.onPostEffectChanged?.(hiddenPostEffect.value)
-			}
-		})
-		container.appendChild(hiddenPostEffect)
-
-		this.onParticleEffectChanged = null
-		this.onPostEffectChanged = null
-		this._hiddenParticleEffect = hiddenParticleEffect
-		this._hiddenPostEffect = hiddenPostEffect
-
-		// Hidden inputs for per-effect param persistence
-		const hiddenParticleParams = document.createElement("input")
-		hiddenParticleParams.type = "hidden"
-		hiddenParticleParams.dataset.setting = "particleEffectParams"
-		hiddenParticleParams.value = JSON.stringify(this.particleEffectParams)
-		hiddenParticleParams.addEventListener("input", () => {
-			try {
-				const parsed = JSON.parse(hiddenParticleParams.value)
-				if (typeof parsed === "object" && parsed !== null) {
-					this.particleEffectParams = parsed
-					this.uploadRenderParams()
-				}
-			} catch {
-				/* ignore corrupt data */
-			}
-		})
-		container.appendChild(hiddenParticleParams)
-		this._hiddenParticleParams = hiddenParticleParams
-
-		const hiddenPostParams = document.createElement("input")
-		hiddenPostParams.type = "hidden"
-		hiddenPostParams.dataset.setting = "postEffectParams"
-		hiddenPostParams.value = JSON.stringify(this.postEffectParams)
-		hiddenPostParams.addEventListener("input", () => {
-			try {
-				const parsed = JSON.parse(hiddenPostParams.value)
-				if (typeof parsed === "object" && parsed !== null) {
-					this.postEffectParams = parsed
-					this.uploadQuadParams()
-				}
-			} catch {
-				/* ignore corrupt data */
-			}
-		})
-		container.appendChild(hiddenPostParams)
-		this._hiddenPostParams = hiddenPostParams
-	}
-
-	/* ================================================================ */
-	/*  Detection ledger UI                                              */
-	/* ================================================================ */
-
-	private initLedger() {
-		this.ledgerToggle = document.getElementById("ledger-toggle")
-		this.ledgerPanels = document.getElementById("ledger-panels")
-		this.ledgerBackdrop = document.getElementById("ledger-backdrop")
-		this.ledgerOrganellesEl = document.getElementById("ledger-organelles")
-		this.ledgerOrganismsEl = document.getElementById("ledger-organisms")
-		this.ledgerPredictionsEl = document.getElementById("ledger-predictions")
-
-		this.ledgerToggle?.classList.remove("hidden")
-
-		this.ledgerToggle?.addEventListener("click", () => {
-			const open = this.ledgerPanels?.classList.toggle("open")
-			this.ledgerBackdrop?.classList.toggle("open", open)
-		})
-		this.ledgerBackdrop?.addEventListener("click", () => this.closeLedger())
-		document.addEventListener("keydown", (e) => {
-			if (e.key === "Escape" && this.ledgerPanels?.classList.contains("open"))
-				this.closeLedger()
-		})
-
-		// Restore muted organisms from persisted settings
-		const savedMuted = this.ledgerOrganismsEl?.dataset.mutedOrganisms
-		if (savedMuted) {
-			for (const sig of savedMuted.split(",").filter(Boolean))
-				this.mutedOrganisms.add(sig)
-		}
-
-		// Mute button delegation on organism panel
-		this.ledgerOrganismsEl?.addEventListener("click", (e) => {
-			const btn = (e.target as HTMLElement).closest<HTMLElement>(".ledger-mute")
-			if (!btn) return
-			const sig = btn.dataset.sig
-			if (!sig) return
-			const wasMuted = this.mutedOrganisms.has(sig)
-			if (wasMuted) {
-				this.mutedOrganisms.delete(sig)
-			} else {
-				this.mutedOrganisms.add(sig)
-			}
-			this.syncMutedAttribute()
-			this.updateLedgerUI()
-		})
-	}
-
-	private syncMutedAttribute() {
-		const muted = this.mutedOrganisms
-		if (this.ledgerOrganismsEl) {
-			if (muted.size > 0) {
-				this.ledgerOrganismsEl.dataset.mutedOrganisms = [...muted].join(",")
-			} else {
-				delete this.ledgerOrganismsEl.dataset.mutedOrganisms
-			}
-		}
-	}
-
-	private closeLedger() {
-		this.ledgerPanels?.classList.remove("open")
-		this.ledgerBackdrop?.classList.remove("open")
-	}
-
-	private updateLedgerUI() {
-		const orgEl = this.ledgerOrganellesEl
-		const osmEl = this.ledgerOrganismsEl
-		if (!orgEl || !osmEl) return
-
-		const frame = this.detectionState
-		if (!frame) {
-			orgEl.innerHTML = ""
-			osmEl.innerHTML = ""
-			this.organelleRows.clear()
-			this.organismRows.clear()
-			this.organelleHeading = null
-			this.organismHeading = null
-			return
-		}
-
-		const types = this.getTypeIds()
-
-		// ── Organelles ──────────────────────────────────────────────────
-		const activeTypeIds = new Set<number>()
-		if (frame.ledger.organellesByType.size > 0) {
-			if (!this.organelleHeading) {
-				this.organelleHeading = document.createElement("div")
-				this.organelleHeading.className = "ledger-heading"
-				this.organelleHeading.textContent = "Organelles"
-				orgEl.prepend(this.organelleHeading)
-			}
-
-			const sorted = [...frame.ledger.organellesByType.entries()].sort(
-				(a, b) => {
-					const sa = frame.ledger.organelleStability.get(a[0]) ?? 0
-					const sb = frame.ledger.organelleStability.get(b[0]) ?? 0
-					return sb - sa || b[1] - a[1]
-				},
-			)
-
-			for (const [typeId, count] of sorted) {
-				activeTypeIds.add(typeId)
-				let entry = this.organelleRows.get(typeId)
-				if (!entry) {
-					const row = document.createElement("div")
-					row.className = "ledger-row"
-					const dot = document.createElement("span")
-					dot.className = "ledger-dot"
-					const countEl = document.createElement("span")
-					countEl.className = "ledger-count"
-					row.append(dot, countEl)
-					entry = { row, countEl }
-					this.organelleRows.set(typeId, entry)
-				}
-				// Update color
-				const groupId = types[typeId] ?? `t${typeId}`
-				const rgb = this.groupColors.get(groupId) ?? [1, 1, 1]
-				const hex = this.rgbToHex(rgb)
-				const dot = entry.row.firstElementChild as HTMLElement
-				if (dot.style.background !== hex) {
-					dot.style.background = hex
-					dot.style.color = hex
-				}
-				// Update count
-				const countStr = String(count)
-				if (entry.countEl.textContent !== countStr)
-					entry.countEl.textContent = countStr
-				// Insert into DOM only if not already there
-				if (!entry.row.parentNode) orgEl.append(entry.row)
-			}
-		} else if (this.organelleHeading) {
-			this.organelleHeading.remove()
-			this.organelleHeading = null
-		}
-
-		// Remove stale organelle rows
-		for (const [typeId, entry] of this.organelleRows) {
-			if (!activeTypeIds.has(typeId)) {
-				entry.row.remove()
-				this.organelleRows.delete(typeId)
-			}
-		}
-
-		// ── Organisms ───────────────────────────────────────────────────
-		const activeSigs = new Set<string>()
-		if (frame.ledger.organismsBySignature.size > 0) {
-			if (!this.organismHeading) {
-				this.organismHeading = document.createElement("div")
-				this.organismHeading.className = "ledger-heading"
-				const title = document.createElement("span")
-				title.textContent = "Organisms"
-				this.unmuteAllBtn = document.createElement("button")
-				this.unmuteAllBtn.className = "ledger-unmute-all"
-				this.unmuteAllBtn.textContent = "\u{1F50A}"
-				this.unmuteAllBtn.title = "Unmute all"
-				this.unmuteAllBtn.addEventListener("click", () => {
-					this.mutedOrganisms.clear()
-					this.syncMutedAttribute()
-					this.updateLedgerUI()
-				})
-				this.organismHeading.append(title, this.unmuteAllBtn)
-				osmEl.prepend(this.organismHeading)
-			}
-
-			const sorted = [...frame.ledger.organismsBySignature.entries()].sort(
-				(a, b) => {
-					const sa = frame.ledger.organismStability.get(a[0]) ?? 0
-					const sb = frame.ledger.organismStability.get(b[0]) ?? 0
-					return sb - sa || b[1] - a[1]
-				},
-			)
-
-			for (const [sig, count] of sorted) {
-				activeSigs.add(sig)
-				let entry = this.organismRows.get(sig)
-				if (!entry) {
-					const row = document.createElement("div")
-					row.className = "ledger-row"
-					const typeIds = sig.split("+").map(Number)
-					for (const tid of typeIds) {
-						const dot = document.createElement("span")
-						dot.className = "ledger-dot"
-						const gid = types[tid] ?? `t${tid}`
-						const rgb = this.groupColors.get(gid) ?? [1, 1, 1]
-						const hex = this.rgbToHex(rgb)
-						dot.style.background = hex
-						dot.style.color = hex
-						row.append(dot)
-					}
-					const countEl = document.createElement("span")
-					countEl.className = "ledger-count"
-					const muteBtn = document.createElement("button")
-					muteBtn.className = "ledger-mute"
-					muteBtn.dataset.sig = sig
-					row.append(countEl, muteBtn)
-					entry = { row, countEl, muteBtn }
-					this.organismRows.set(sig, entry)
-				}
-				// Update count
-				const countStr = String(count)
-				if (entry.countEl.textContent !== countStr)
-					entry.countEl.textContent = countStr
-				// Update mute state
-				const muted = this.mutedOrganisms.has(sig)
-				const wantClass = muted ? "ledger-mute muted" : "ledger-mute"
-				if (entry.muteBtn.className !== wantClass)
-					entry.muteBtn.className = wantClass
-				const wantIcon = muted ? "\u{1F507}" : "\u{1F509}"
-				if (entry.muteBtn.textContent !== wantIcon)
-					entry.muteBtn.textContent = wantIcon
-				const wantTitle = muted ? "Unmute" : "Mute"
-				if (entry.muteBtn.title !== wantTitle) entry.muteBtn.title = wantTitle
-				// Insert into DOM only if not already there
-				if (!entry.row.parentNode) osmEl.append(entry.row)
-			}
-		} else if (this.organismHeading) {
-			this.organismHeading.remove()
-			this.organismHeading = null
-		}
-
-		// Remove stale organism rows
-		for (const [sig, entry] of this.organismRows) {
-			if (!activeSigs.has(sig)) {
-				entry.row.remove()
-				this.organismRows.delete(sig)
-			}
-		}
-
-		// Show/hide unmute-all button
-		if (this.unmuteAllBtn) {
-			const anyMuted = this.mutedOrganisms.size > 0
-			const wantDisplay = anyMuted ? "" : "none"
-			if (this.unmuteAllBtn.style.display !== wantDisplay) {
-				this.unmuteAllBtn.style.display = wantDisplay
-			}
-		}
-
-		// ── Predicted Species ────────────────────────────────────────────
-		this.updatePredictionLedger()
-	}
-
-	private updatePredictionLedger() {
-		const predEl = this.ledgerPredictionsEl
-		if (!predEl) return
-
-		const prediction = this.organismPrediction
-		if (!prediction || prediction.organisms.length === 0) {
-			if (this.predictionHeading) {
-				this.predictionHeading.remove()
-				this.predictionHeading = null
-			}
-			if (this.speciesDecaySlider) {
-				this.speciesDecaySlider.parentElement?.remove()
-				this.speciesDecaySlider = null
-			}
-			for (const [, entry] of this.predictionRows) entry.row.remove()
-			this.predictionRows.clear()
-			this.speciesPresence.clear()
-			this.speciesBrightness.clear()
-			this.lastPredictionTime = 0
-			return
-		}
-
-		// Timing for decay
-		const now = performance.now()
-		const dt =
-			this.lastPredictionTime > 0
-				? Math.min((now - this.lastPredictionTime) / 1000, 0.2) // seconds, capped
-				: 0
-		this.lastPredictionTime = now
-
-		// Decay rate: how fast presence drains per second when not observed
-		const decayRate = 0.15
-
-		if (!this.predictionHeading) {
-			this.predictionHeading = document.createElement("div")
-			this.predictionHeading.className = "ledger-heading"
-			this.predictionHeading.textContent = "Predicted Species"
-			predEl.prepend(this.predictionHeading)
-		}
-
-		// Decay threshold slider
-		if (!this.speciesDecaySlider) {
-			const sliderRow = document.createElement("div")
-			sliderRow.className = "ledger-row"
-			sliderRow.style.gap = "6px"
-			sliderRow.style.fontSize = "10px"
-			sliderRow.style.color = "#999"
-			const label = document.createElement("span")
-			label.textContent = "decay"
-			const slider = document.createElement("input")
-			slider.type = "range"
-			slider.min = "0"
-			slider.max = "0.5"
-			slider.step = "0.01"
-			slider.value = String(this.speciesDecayThreshold)
-			slider.style.flex = "1"
-			slider.style.height = "12px"
-			slider.style.accentColor = "#888"
-			slider.addEventListener("input", () => {
-				this.speciesDecayThreshold = parseFloat(slider.value)
-			})
-			sliderRow.append(label, slider)
-			this.speciesDecaySlider = slider
-			predEl.prepend(sliderRow)
-			predEl.prepend(this.predictionHeading)
-		}
-
-		// Cross-reference with observed organisms
-		const observedSigs =
-			this.detectionState?.ledger.organismsBySignature ?? new Map()
-
-		// Update presence for all tracked signatures
-		// Boost observed ones, decay unobserved ones
-		const allTracked = new Set<string>()
-		for (const org of prediction.organisms) allTracked.add(org.signature)
-		for (const [sig] of this.speciesPresence) allTracked.add(sig)
-		for (const [sig] of observedSigs) allTracked.add(sig)
-
-		for (const sig of allTracked) {
-			const prev = this.speciesPresence.get(sig) ?? 0
-			const prevBright = this.speciesBrightness.get(sig) ?? 0
-			const isObserved = observedSigs.has(sig)
-			// Instant attack to 1 when observed, slow decay when not
-			const next = isObserved ? 1 : prev - dt * decayRate
-			const nextBright = isObserved
-				? Math.min(1, prevBright + 0.15)
-				: prevBright - dt * decayRate * 3
-			if (next <= 0) {
-				this.speciesPresence.delete(sig)
-				this.speciesBrightness.delete(sig)
-			} else {
-				this.speciesPresence.set(sig, next)
-				this.speciesBrightness.set(sig, Math.max(0, nextBright))
-			}
-		}
-
-		// Build unified list: predicted + unpredicted, all with presence
-		const predictedBysig = new Map(
-			prediction.organisms.map((o) => [o.signature, o] as const),
-		)
-		const types = this.getTypeIds()
-
-		// Collect all entries above threshold, sorted by presence (stability)
-		const allEntries: {
-			sig: string
-			presence: number
-			predicted: boolean
-			typeKeys: ReadonlyArray<string>
-		}[] = []
-
-		for (const [sig, presence] of this.speciesPresence) {
-			if (presence < this.speciesDecayThreshold && !observedSigs.has(sig))
-				continue
-			const pred = predictedBysig.get(sig)
-			const typeKeys = pred
-				? pred.typeKeys
-				: sig
-						.split("+")
-						.map(Number)
-						.map((i) => types[i])
-						.filter(Boolean)
-			allEntries.push({ sig, presence, predicted: !!pred, typeKeys })
-		}
-		// Also include predicted entries that haven't been observed yet (no presence yet)
-		for (const org of prediction.organisms) {
-			if (this.speciesPresence.has(org.signature)) continue
-			allEntries.push({
-				sig: org.signature,
-				presence: 0,
-				predicted: true,
-				typeKeys: org.typeKeys,
-			})
-		}
-
-		allEntries.sort((a, b) => b.presence - a.presence)
-
-		// Compute score range for arrow display (predicted entries only)
-		const scores = prediction.organisms.map((o) => o.stabilityScore)
-		const minScore = Math.min(...scores)
-		const maxScore = Math.max(...scores)
-		const scoreRange = maxScore - minScore
-
-		const activeSigs = new Set<string>()
-		for (const { sig, predicted, typeKeys } of allEntries) {
-			activeSigs.add(sig)
-			const entry = this.ensurePredictionRow(sig, typeKeys)
-
-			if (predicted) {
-				const org = predictedBysig.get(sig)!
-				const t =
-					scoreRange > 0 ? (org.stabilityScore - minScore) / scoreRange : 1
-				const [arrow, color] =
-					t >= 0.75
-						? ["\u21c8", "#4caf50"]
-						: t >= 0.4
-							? ["\u2191", "#81c784"]
-							: t >= 0.15
-								? ["\u2193", "#e57373"]
-								: ["\u21ca", "#f44336"]
-				if (entry.scoreEl.textContent !== arrow)
-					entry.scoreEl.textContent = arrow
-				if (entry.scoreEl.style.color !== color)
-					entry.scoreEl.style.color = color
-			} else {
-				if (entry.scoreEl.textContent !== "?") entry.scoreEl.textContent = "?"
-				if (entry.scoreEl.style.color !== "#ffb74d")
-					entry.scoreEl.style.color = "#ffb74d"
-			}
-
-			const brightness = this.speciesBrightness.get(sig) ?? 0
-			const wantOpacity = String(Math.max(0.2, brightness))
-			if (entry.row.style.opacity !== wantOpacity)
-				entry.row.style.opacity = wantOpacity
-			predEl.append(entry.row)
-		}
-
-		// Remove rows no longer active
-		for (const [sig, entry] of this.predictionRows) {
-			if (!activeSigs.has(sig)) {
-				entry.row.remove()
-				this.predictionRows.delete(sig)
-			}
-		}
-	}
-
-	private ensurePredictionRow(
-		sig: string,
-		typeKeys: ReadonlyArray<string>,
-	): { row: HTMLElement; scoreEl: HTMLElement } {
-		let entry = this.predictionRows.get(sig)
-		if (!entry) {
-			const row = document.createElement("div")
-			row.className = "ledger-row"
-			for (const tk of typeKeys) {
-				const dot = document.createElement("span")
-				dot.className = "ledger-dot"
-				const rgb = this.groupColors.get(tk) ?? [1, 1, 1]
-				const hex = this.rgbToHex(rgb)
-				dot.style.background = hex
-				dot.style.color = hex
-				row.append(dot)
-			}
-			const scoreEl = document.createElement("span")
-			scoreEl.className = "ledger-likelihood"
-			row.append(scoreEl)
-			entry = { row, scoreEl }
-			this.predictionRows.set(sig, entry)
-		}
-		return entry
-	}
-
-	/* ================================================================ */
-	/*  UI helpers (unchanged from WebGL2 version)                       */
-	/* ================================================================ */
-
-	private buildTypeRow(
-		section: HTMLElement,
-		container: HTMLElement,
-		type: string,
-		members: CustomParticle[],
-		rebuildFn: (container: HTMLElement) => void,
-	) {
-		const representative = members[0] ?? null
-		const color: [number, number, number] = representative
-			? [
-					representative.color[0],
-					representative.color[1],
-					representative.color[2],
-				]
-			: (this.groupColors.get(type) ?? [1, 1, 1])
-
-		const row = document.createElement("div")
-		row.className = "particle-type-row"
-
-		const deleteBtn = document.createElement("button")
-		deleteBtn.className = "particle-card-delete"
-		deleteBtn.textContent = "\u00d7"
-		deleteBtn.title = "Delete particle type"
-		deleteBtn.addEventListener("click", (e) => {
-			e.stopPropagation()
-			const removeIndices: number[] = []
-			for (let i = 0; i < this.particles.length; i++) {
-				if (this.particles[i].groupId === type) removeIndices.push(i)
-			}
-			this.removeParticlesByIndices(removeIndices)
-			this.groupNames.delete(type)
-			this.groupColors.delete(type)
-			this.forceMatrixDirty = true
-
-			const types = this.getTypeIds()
-			this.forceMatrix = resizeMatrix(this.forceMatrix, types)
-			// audio types updated via bar-boundary snapshot
-
-			const openSections = this.getOpenSections(container)
-			container.innerHTML = ""
-			const rebuild = rebuildFn
-			rebuild(container)
-			this.restoreOpenSections(container, openSections)
-			container.dispatchEvent(new Event("change", { bubbles: true }))
-		})
-		row.appendChild(deleteBtn)
-
-		const picker = new ColorPicker(this.rgbToHex(color))
-		picker.element.classList.add("particle-type-swatch")
-		picker.input.dataset.setting = `particle:${type}:color`
-		picker.onChange((hex) => {
-			const rgb = this.hexToRgb(hex)
-			this.groupColors.set(type, rgb)
-			for (const p of this.particles) {
-				if (p.groupId === type) {
-					p.color[0] = rgb[0]
-					p.color[1] = rgb[1]
-					p.color[2] = rgb[2]
-				}
-			}
-			this.uploadParticleColors()
-			this.syncMatrixHeaders(container)
-			// color updates flow through bar-boundary snapshot
-		})
-		row.appendChild(picker.element)
-
-		const nameInput = document.createElement("input")
-		nameInput.type = "text"
-		nameInput.className = "particle-type-name"
-		nameInput.value = this.groupNames.get(type) || type
-		nameInput.dataset.setting = `particle:${type}:name`
-		nameInput.addEventListener("input", () => {
-			this.groupNames.set(type, nameInput.value)
-			this.syncMatrixHeaders(container)
-		})
-		row.appendChild(nameInput)
-
-		const countInput = document.createElement("input")
-		countInput.type = "number"
-		countInput.className = "particle-type-count"
-		countInput.value = String(members.length)
-		countInput.min = "0"
-		countInput.step = "10"
-		countInput.dataset.setting = `particle:${type}:count`
-		countInput.addEventListener("wheel", (e) => {
-			e.preventDefault()
-			e.stopPropagation()
-			const direction = e.deltaY > 0 ? -1 : e.deltaY < 0 ? 1 : 0
-			if (direction === 0) return
-			applyStepDelta(countInput, direction)
-		})
-		countInput.addEventListener("input", () => {
-			const desired = Math.max(0, Number(countInput.value) || 0)
-			const currentOfType = this.particles.filter((p) => p.groupId === type)
-			const currentCount = currentOfType.length
-
-			if (desired === currentCount) return
-
-			if (desired > currentCount) {
-				const startIdx = this.particles.length
-				const toAdd = Math.min(
-					desired - currentCount,
-					MAX_PARTICLES - this.particles.length,
-				)
-				if (toAdd <= 0) return
-				const liveColor = this.groupColors.get(type) ?? color
-				for (let i = 0; i < toAdd; i++) {
-					this.particles.push(
-						new CustomParticle(
-							Math.random() * this.width,
-							Math.random() * this.height,
-							type,
-							[liveColor[0], liveColor[1], liveColor[2]],
-						),
-					)
-				}
-				this.count = this.particles.length
-				this.uploadParticleRange(startIdx, toAdd)
-			} else {
-				const removeIndices: number[] = []
-				for (
-					let i = this.particles.length - 1;
-					i >= 0 && removeIndices.length < currentCount - desired;
-					i--
-				) {
-					if (this.particles[i].groupId === type) removeIndices.push(i)
-				}
-				this.removeParticlesByIndices(removeIndices)
-			}
-
-			members.length = 0
-			for (const p of this.particles) {
-				if (p.groupId === type) members.push(p)
-			}
-		})
-		row.appendChild(countInput)
-
-		section.appendChild(row)
-	}
-
-	private buildMatrixUI(container: HTMLElement, rootContainer?: HTMLElement) {
-		const types = this.getTypeIds()
-		if (types.length === 0) return
-
-		const wrapper = document.createElement("div")
-		wrapper.className = "force-matrix-container"
-
-		const headerRow = document.createElement("div")
-		headerRow.className = "force-matrix-header"
-
-		const matrixLabel = document.createElement("label")
-		matrixLabel.style.fontSize = "12px"
-		matrixLabel.style.color = "#999"
-		matrixLabel.textContent = "Force Matrix"
-		headerRow.appendChild(matrixLabel)
-
-		const randomBtn = document.createElement("button")
-		randomBtn.className = "force-matrix-randomize"
-		randomBtn.textContent = "Randomize"
-		randomBtn.title = "Randomize force matrix"
-		randomBtn.addEventListener("click", () => {
-			this.forceMatrix = randomizeMatrix(types)
-			this.forceMatrixDirty = true
-			this.speciesPresence.clear()
-			this.speciesBrightness.clear()
-			this.syncMatrixUI(wrapper, types)
-			this.syncMatrixHidden(container)
-
-			const queryRoot = rootContainer ?? container
-			queryRoot.dispatchEvent(new Event("change", { bubbles: true }))
-		})
-		headerRow.appendChild(randomBtn)
-
-		const clearBtn = document.createElement("button")
-		clearBtn.className = "force-matrix-clear"
-		clearBtn.textContent = "Clear"
-		clearBtn.title = "Clear force matrix"
-		clearBtn.addEventListener("click", () => {
-			this.forceMatrix = emptyMatrix(types)
-			this.forceMatrixDirty = true
-			this.syncMatrixUI(wrapper, types)
-			this.syncMatrixHidden(container)
-			container.dispatchEvent(new Event("change", { bubbles: true }))
-		})
-		headerRow.appendChild(clearBtn)
-
-		wrapper.appendChild(headerRow)
-
-		const autoToggle = document.createElement("div")
-		autoToggle.className = "control-group"
-		const autoLabel = document.createElement("label")
-		autoLabel.textContent = "Auto Randomize"
-		autoToggle.appendChild(autoLabel)
-		const autoCheckbox = document.createElement("input")
-		autoCheckbox.type = "checkbox"
-		autoCheckbox.checked = this.autoRandomizeMatrixEnabled
-		autoCheckbox.dataset.setting = "autoRandomize"
-		autoCheckbox.addEventListener("change", () => {
-			this.autoRandomizeMatrixEnabled = autoCheckbox.checked
-		})
-		autoToggle.appendChild(autoCheckbox)
-		wrapper.appendChild(autoToggle)
-
-		const cyclesGroup = document.createElement("div")
-		cyclesGroup.className = "control-group"
-		const cyclesLabel = document.createElement("label")
-		cyclesLabel.textContent = "Cycles Before Randomize"
-		cyclesGroup.appendChild(cyclesLabel)
-		const cyclesInput = document.createElement("input")
-		cyclesInput.type = "number"
-		cyclesInput.min = "1"
-		cyclesInput.max = "20"
-		cyclesInput.step = "1"
-		cyclesInput.value = String(this.cyclesBeforeRandomize)
-		cyclesInput.dataset.setting = "cyclesBeforeRandomize"
-		const syncCycles = () => {
-			this.cyclesBeforeRandomize = Math.max(1, Math.min(20, Number(cyclesInput.value) || 3))
-			cyclesInput.value = String(this.cyclesBeforeRandomize)
-			setCycles(this.cyclesBeforeRandomize)
-		}
-		cyclesInput.addEventListener("change", syncCycles)
-		cyclesInput.addEventListener("input", syncCycles)
-		cyclesGroup.appendChild(cyclesInput)
-		wrapper.appendChild(cyclesGroup)
-
-		const fallbackToggle = document.createElement("div")
-		fallbackToggle.className = "control-group"
-		const fallbackLabel = document.createElement("label")
-		fallbackLabel.textContent = "Fallback Timer"
-		fallbackToggle.appendChild(fallbackLabel)
-		const fallbackCheckbox = document.createElement("input")
-		fallbackCheckbox.type = "checkbox"
-		fallbackCheckbox.checked = this.fallbackEnabled
-		fallbackCheckbox.dataset.setting = "fallbackEnabled"
-		fallbackCheckbox.addEventListener("change", () => {
-			this.fallbackEnabled = fallbackCheckbox.checked
-		})
-		fallbackToggle.appendChild(fallbackCheckbox)
-		wrapper.appendChild(fallbackToggle)
-
-		const fallbackBarsGroup = document.createElement("div")
-		fallbackBarsGroup.className = "control-group"
-		const fallbackBarsLabel = document.createElement("label")
-		fallbackBarsLabel.textContent = "Fallback Bars"
-		fallbackBarsGroup.appendChild(fallbackBarsLabel)
-		const fallbackBarsInput = document.createElement("input")
-		fallbackBarsInput.type = "number"
-		fallbackBarsInput.min = "2"
-		fallbackBarsInput.max = "32"
-		fallbackBarsInput.step = "1"
-		fallbackBarsInput.value = String(this.fallbackBars)
-		fallbackBarsInput.dataset.setting = "fallbackBars"
-		fallbackBarsInput.addEventListener("change", () => {
-			this.fallbackBars = Math.max(2, Math.min(32, Number(fallbackBarsInput.value) || 8))
-			fallbackBarsInput.value = String(this.fallbackBars)
-		})
-		fallbackBarsGroup.appendChild(fallbackBarsInput)
-		wrapper.appendChild(fallbackBarsGroup)
-
-		const grid = document.createElement("div")
-		grid.className = "force-matrix-grid"
-		grid.style.gridTemplateColumns = `repeat(${types.length + 1}, 16px)`
-		grid.style.gridAutoRows = "16px"
-
-		// Top-left empty corner
-		grid.appendChild(document.createElement("div"))
-
-		// Column headers
-		for (const tgt of types) {
-			const hdr = document.createElement("div")
-			hdr.className = "force-matrix-header-cell"
-			const [r, g, b] = this.getTypeColor(tgt)
-			hdr.innerHTML = `<span class="force-matrix-swatch" style="background:rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})"></span>`
-			hdr.title = this.groupNames.get(tgt) || tgt
-			grid.appendChild(hdr)
-		}
-
-		// Rows
-		for (const src of types) {
-			const rowHdr = document.createElement("div")
-			rowHdr.className = "force-matrix-header-cell"
-			const [r, g, b] = this.getTypeColor(src)
-			rowHdr.innerHTML = `<span class="force-matrix-swatch" style="background:rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})"></span>`
-			rowHdr.title = this.groupNames.get(src) || src
-			grid.appendChild(rowHdr)
-
-			for (const tgt of types) {
-				const input = document.createElement("input")
-				input.type = "number"
-				input.className = "force-matrix-cell"
-				input.dataset.src = src
-				input.dataset.tgt = tgt
-				input.min = "-1"
-				input.max = "1"
-				input.step = "0.05"
-				input.value = String(this.forceMatrix[src]?.[tgt] ?? 0)
-				this.colorizeCell(input)
-
-				input.addEventListener("wheel", (e) => {
-					e.preventDefault()
-					e.stopPropagation()
-					const direction = e.deltaY > 0 ? -1 : e.deltaY < 0 ? 1 : 0
-					if (direction === 0) return
-					applyStepDelta(input, direction)
-				})
-
-				input.addEventListener("input", () => {
-					const val = Math.max(-1, Math.min(1, Number(input.value) || 0))
-					const updated: Record<string, Record<string, number>> = {}
-					for (const s of types) {
-						updated[s] = { ...this.forceMatrix[s] }
-					}
-					updated[src][tgt] = val
-					this.forceMatrix = updated
-					this.forceMatrixDirty = true
-					this.colorizeCell(input)
-					this.syncMatrixHidden(container)
-				})
-
-				grid.appendChild(input)
-			}
-		}
-
-		wrapper.appendChild(grid)
-
-		this._matrixWrapper = wrapper
-		this._matrixContainer = container
-		this._matrixRootContainer = rootContainer ?? container
-
-		container.appendChild(wrapper)
-	}
-
-	private colorizeCell(input: HTMLInputElement) {
-		const val = Math.max(-1, Math.min(1, Number(input.value) || 0))
-		const bg = [0x1a, 0x1a, 0x1a] // neutral base (#1a1a1a)
-		if (val < 0) {
-			const t = Math.abs(val)
-			bg[0] = Math.round(bg[0] + (255 - bg[0]) * t)
-			bg[1] = Math.round(bg[1] + (0 - bg[1]) * t)
-			bg[2] = Math.round(bg[2] + (0 - bg[2]) * t)
-		} else if (val > 0) {
-			const t = val
-			bg[0] = Math.round(bg[0] + (0 - bg[0]) * t)
-			bg[1] = Math.round(bg[1] + (255 - bg[1]) * t)
-			bg[2] = Math.round(bg[2] + (0 - bg[2]) * t)
-		}
-		input.style.background = `rgb(${bg[0]}, ${bg[1]}, ${bg[2]})`
-		input.style.color = "transparent"
-		input.style.caretColor = "transparent"
-	}
-
-	private syncMatrixUI(wrapper: HTMLElement, types: readonly string[]) {
-		for (const src of types) {
-			for (const tgt of types) {
-				const input = wrapper.querySelector<HTMLInputElement>(
-					`input[data-src="${src}"][data-tgt="${tgt}"]`,
-				)
-				if (input) {
-					input.value = String(this.forceMatrix[src]?.[tgt] ?? 0)
-					this.colorizeCell(input)
-				}
-			}
-		}
-	}
-
-	private syncMatrixHeaders(container: HTMLElement) {
-		const matrixWrapper = container.querySelector(".force-matrix-container")
-		if (!matrixWrapper) return
-		const headers = matrixWrapper.querySelectorAll<HTMLElement>(
-			".force-matrix-header-cell",
-		)
-		const types = this.getTypeIds()
-		for (let i = 0; i < types.length; i++) {
-			const type = types[i]
-			const [r, g, b] = this.getTypeColor(type)
-			const colorStr = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`
-			const name = this.groupNames.get(type) || type
-			// Column header (first N header-cells)
-			const colHdr = headers[i]
-			if (colHdr) {
-				const sw = colHdr.querySelector<HTMLElement>(".force-matrix-swatch")
-				if (sw) sw.style.background = colorStr
-				colHdr.title = name
-			}
-			// Row header (next N header-cells)
-			const rowHdr = headers[types.length + i]
-			if (rowHdr) {
-				const sw = rowHdr.querySelector<HTMLElement>(".force-matrix-swatch")
-				if (sw) sw.style.background = colorStr
-				rowHdr.title = name
-			}
-		}
-	}
-
-	private syncMatrixHidden(container: HTMLElement) {
-		const hidden = container.querySelector<HTMLInputElement>(
-			'input[data-setting="forceMatrix"]',
-		)
-		if (hidden) {
-			hidden.value = matrixToJSON(this.forceMatrix)
-		}
-	}
-
-	private getTypeIds(): string[] {
+	getTypeIds(): string[] {
 		const seen = new Set<string>()
 		const result: string[] = []
 		// Include all registered types (preserving registration order)
@@ -6968,8 +3628,27 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		return result
 	}
 
+	/**
+	 * Randomize the force matrix and particle counts, then push both to
+	 * the UI. Used by the wall-clock auto-randomize and by the music
+	 * engine's per-progression-loop randomize request.
+	 */
+	randomizeForceMatrixAndCounts() {
+		const types = this.getTypeIds()
+		this.forceMatrix = randomizeMatrix(types)
+		this.forceMatrixDirty = true
+		this.randomizeCounts()
+		if (this._matrixWrapper) syncMatrixUI(this, this._matrixWrapper, types)
+		if (this._matrixContainer) syncMatrixHidden(this, this._matrixContainer)
+		if (this._matrixRootContainer) {
+			this._matrixRootContainer.dispatchEvent(
+				new Event("change", { bubbles: true }),
+			)
+		}
+	}
+
 	/** Randomize particle counts per type and sync UI. */
-	private randomizeCounts() {
+	randomizeCounts() {
 		const types = this.getTypeIds()
 		const allRemoveIndices: number[] = []
 		const pendingAdds: Array<{ type: string; count: number }> = []
@@ -6983,18 +3662,20 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 		// Phase 2: density-based total from screen area and scale
 		const screenArea = this.width * this.height
-		const rawTotal = Math.round(DENSITY_TARGET * screenArea / this.scale)
+		const rawTotal = Math.round((DENSITY_TARGET * screenArea) / this.scale)
 		const minTotal = activeCount * MIN_PER_ACTIVE_TYPE
 		const finalTotal = Math.min(Math.max(rawTotal, minTotal), MAX_PARTICLES)
 
 		// Phase 3: distribute across types via random weights
-		const weights = types.map((_, i) => activeFlags[i] ? Math.random() : 0)
+		const weights = types.map((_, i) => (activeFlags[i] ? Math.random() : 0))
 		const weightSum = weights.reduce((a, b) => a + b, 0)
 		const remainder = finalTotal - minTotal
 		const desired = types.map((_, i) => {
 			if (!activeFlags[i]) return 0
 			if (remainder <= 0) return MIN_PER_ACTIVE_TYPE
-			return MIN_PER_ACTIVE_TYPE + Math.round((weights[i] / weightSum) * remainder)
+			return (
+				MIN_PER_ACTIVE_TYPE + Math.round((weights[i] / weightSum) * remainder)
+			)
 		})
 
 		// Phase 4: single-pass rounding correction
@@ -7004,8 +3685,13 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		let idx = 0
 		while (diff !== 0 && idx < activeIndices.length * 2) {
 			const i = activeIndices[idx % activeIndices.length]
-			if (diff > 0) { desired[i]++; diff-- }
-			else if (desired[i] > MIN_PER_ACTIVE_TYPE) { desired[i]--; diff++ }
+			if (diff > 0) {
+				desired[i]++
+				diff--
+			} else if (desired[i] > MIN_PER_ACTIVE_TYPE) {
+				desired[i]--
+				diff++
+			}
 			idx++
 		}
 
@@ -7069,8 +3755,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-
-	private getTypeColor(type: string): [number, number, number] {
+	getTypeColor(type: string): [number, number, number] {
 		const gc = this.groupColors.get(type)
 		if (gc) return gc
 		for (const p of this.particles) {
@@ -7087,7 +3772,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.cleanup()
 	}
 
-	private cleanup() {
+	cleanup() {
 		if (this.canvas) {
 			if (this.boundMouseMove)
 				this.canvas.removeEventListener("mousemove", this.boundMouseMove)
@@ -7105,7 +3790,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.mouseLeft = false
 		this.mouseRight = false
 
-		this.closeLedger()
+		closeLedger(this)
 		this.ledgerToggle?.classList.add("hidden")
 		if (this.ledgerOrganellesEl) this.ledgerOrganellesEl.innerHTML = ""
 		if (this.ledgerOrganismsEl) this.ledgerOrganismsEl.innerHTML = ""
@@ -7128,16 +3813,14 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		this.detectionWorker = null
 		this.detectionWorkerBusy = false
 		this.prevFrameWire = null
-		this.scheduleWorker?.terminate()
-		this.scheduleWorker = null
-		this.audioGraph.dispose()
+		this.music.dispose()
+		this.activeMusicPulses.clear()
 		this.readbackBuffer?.destroy()
 		this.readbackBuffer = null
 		this.detectionBuffer?.destroy()
 		this.detectionBuffer = null
 		this.radiusScaleBuffer?.destroy()
 		this.radiusScaleBuffer = null
-		this.activePulses.clear()
 		this.readbackPending = false
 
 		this.particleBuffers[0]?.destroy()
@@ -7256,7 +3939,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	private readSavedParticleConfig(): {
+	readSavedParticleConfig(): {
 		types: {
 			type: string
 			name: string
@@ -7306,7 +3989,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 	}
 
-	private rgbToHex(rgb: [number, number, number]): string {
+	rgbToHex(rgb: [number, number, number]): string {
 		return (
 			"#" +
 			rgb
@@ -7319,18 +4002,18 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 		)
 	}
 
-	private hexToRgb(hex: string): [number, number, number] {
+	hexToRgb(hex: string): [number, number, number] {
 		const r = parseInt(hex.slice(1, 3), 16) / 255
 		const g = parseInt(hex.slice(3, 5), 16) / 255
 		const b = parseInt(hex.slice(5, 7), 16) / 255
 		return [r, g, b]
 	}
 
-	private generateGroupId(): string {
+	generateGroupId(): string {
 		return "p" + this.nextGroupId++
 	}
 
-	private generateName(): string {
+	generateName(): string {
 		const existingNames = new Set(this.groupNames.values())
 		if (!existingNames.has("particle")) return "particle"
 		let i = 1

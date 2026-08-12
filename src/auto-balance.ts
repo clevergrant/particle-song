@@ -1,3 +1,10 @@
+import {
+	AUTO_BASE_RADIUS_FACTOR,
+	AUTO_BASE_STRENGTH,
+	AUTO_MAX_AFFECT_RADIUS,
+	AUTO_MIN_AFFECT_RADIUS,
+	AUTO_MIN_CROWD_LIMIT,
+} from "./constants"
 import type { ForceMatrix } from "./particles"
 import { clamp } from "./math-utils"
 
@@ -18,12 +25,6 @@ interface AutoBalanceResult {
 	readonly crowdLimit: number
 	readonly spread: number
 }
-
-const BASE_RADIUS_FACTOR = 4.0
-const BASE_STRENGTH = 200
-const MIN_AFFECT_RADIUS = 20
-const MAX_AFFECT_RADIUS = 300
-const MIN_CROWD_LIMIT = 8
 
 function lerp(a: number, b: number, t: number): number {
 	return a + (b - a) * t
@@ -114,9 +115,9 @@ export function autoBalance(inputs: AutoBalanceInputs): AutoBalanceResult {
 	// interactions stay local; low-variance matrices need wider reach
 	const varianceFactor = lerp(1.15, 0.85, clamp(stdDev / 0.6, 0, 1))
 	const affectRadius = clamp(
-		meanSpacing * BASE_RADIUS_FACTOR * varianceFactor,
-		MIN_AFFECT_RADIUS,
-		MAX_AFFECT_RADIUS,
+		meanSpacing * AUTO_BASE_RADIUS_FACTOR * varianceFactor,
+		AUTO_MIN_AFFECT_RADIUS,
+		AUTO_MAX_AFFECT_RADIUS,
 	)
 
 	// --- forceRepelDistance ---
@@ -129,7 +130,7 @@ export function autoBalance(inputs: AutoBalanceInputs): AutoBalanceResult {
 	// Weak matrices need stronger amplification to produce visible structure;
 	// strong matrices need less so they don't explode
 	const intensityFactor = lerp(1.4, 0.7, clamp(meanAbs, 0, 1))
-	const baseStrength = BASE_STRENGTH * intensityFactor
+	const baseStrength = AUTO_BASE_STRENGTH * intensityFactor
 
 	// --- repelStrength ---
 	// Mostly-attractive matrices need stronger repulsion to prevent collapse;
@@ -141,7 +142,7 @@ export function autoBalance(inputs: AutoBalanceInputs): AutoBalanceResult {
 	// High attraction ratio → particles clump more → allow larger crowds
 	const crowdBase = Math.sqrt(particles / numTypes)
 	const crowdFactor = lerp(0.8, 1.3, clamp(attrRatio, 0, 1))
-	const crowdLimit = Math.max(MIN_CROWD_LIMIT, crowdBase * crowdFactor)
+	const crowdLimit = Math.max(AUTO_MIN_CROWD_LIMIT, crowdBase * crowdFactor)
 
 	// --- spread ---
 	// High-variance matrices benefit from tighter spread (more locality);
