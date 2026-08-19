@@ -6,7 +6,6 @@ import {
 	VOLUME_RANGE,
 	WORKLET_NODE_NAME,
 } from "../constants"
-import { Diagnostics } from "./diagnostics"
 import type { NoteParams } from "./types"
 import { clamp, midiToFreq } from "./utils"
 // Vite bundles the worklet as a separate ES-module chunk and returns the
@@ -35,13 +34,11 @@ export class AudioGraph2 {
 	private volume = 0.5
 	private minNoteGapSec = 0.6
 	private enabled = false
-	readonly diagnostics = new Diagnostics()
 
 	enable(): void {
 		if (this.ctx) {
 			if (this.ctx.state === "suspended") this.ctx.resume()
 			this.enabled = true
-			this.diagnostics.enable(this.ctx.currentTime)
 			return
 		}
 		this.ctx = new AudioContext()
@@ -50,14 +47,12 @@ export class AudioGraph2 {
 		this.masterGain.connect(this.ctx.destination)
 		if (this.ctx.state === "suspended") this.ctx.resume()
 		this.enabled = true
-		this.diagnostics.enable(this.ctx.currentTime)
 		void this.loadWorklet()
 	}
 
 	disable(): void {
 		this.enabled = false
 		if (this.ctx) {
-			this.diagnostics.disable(this.ctx.currentTime)
 			if (this.ctx.state === "running") this.ctx.suspend()
 		}
 	}
@@ -127,14 +122,6 @@ export class AudioGraph2 {
 		if (t - last < this.minNoteGapSec) return false
 		this.lastTriggerTime.set(typeId, t)
 		const freq = midiToFreq(params.midiNote)
-		this.diagnostics.recordTrigger(
-			t,
-			typeId,
-			params.midiNote,
-			freq,
-			params.sustainSec,
-			params.triangleBlend,
-		)
 		this.polyVoice.port.postMessage({
 			kind: "trigger",
 			slot: typeId,

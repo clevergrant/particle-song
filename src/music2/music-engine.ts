@@ -83,9 +83,6 @@ export class MusicEngine {
 			cycleAt: t + this.settings.chordCycleSec,
 		}
 		this.loopsCompleted = 0
-		this.audio.diagnostics.recordSettingsSnapshot(t, this.settings)
-		this.audio.diagnostics.recordKeyChange(t, this.key)
-		this.audio.diagnostics.recordChordChange(t, this.harmony.chord.rootSemitones)
 	}
 	disable(): void {
 		this.audio.disable()
@@ -117,38 +114,30 @@ export class MusicEngine {
 	setVolume(v: number): void {
 		this.settings.volume = v
 		this.audio.setVolume(v)
-		this.logSettingsChange("volume", v)
 	}
 	setTonicMidi(m: number): void {
 		this.settings.tonicMidi = m
-		this.logSettingsChange("tonicMidi", m)
 	}
 	setSustainRange(minSec: number, maxSec: number): void {
 		const lo = Math.max(SUSTAIN_MIN_FLOOR_SEC, Math.min(minSec, maxSec))
 		const hi = Math.max(lo, maxSec)
 		this.settings.sustainMinSec = lo
 		this.settings.sustainMaxSec = hi
-		this.logSettingsChange("sustainMinSec", lo)
-		this.logSettingsChange("sustainMaxSec", hi)
 	}
 	setTimbreRange(minBlend: number, maxBlend: number): void {
 		const lo = clamp(minBlend, BLEND_RANGE.min, BLEND_RANGE.max)
 		const hi = clamp(Math.max(lo, maxBlend), BLEND_RANGE.min, BLEND_RANGE.max)
 		this.settings.timbreMinBlend = lo
 		this.settings.timbreMaxBlend = hi
-		this.logSettingsChange("timbreMinBlend", lo)
-		this.logSettingsChange("timbreMaxBlend", hi)
 	}
 	setMinNoteGap(sec: number): void {
 		const clamped = clamp(sec, MIN_NOTE_GAP_RANGE.min, MIN_NOTE_GAP_RANGE.max)
 		this.settings.minNoteGapSec = clamped
 		this.audio.setMinNoteGap(clamped)
-		this.logSettingsChange("minNoteGapSec", clamped)
 	}
 	setChordCycleSec(sec: number): void {
 		const clamped = clamp(sec, CHORD_CYCLE_RANGE.min, CHORD_CYCLE_RANGE.max)
 		this.settings.chordCycleSec = clamped
-		this.logSettingsChange("chordCycleSec", clamped)
 	}
 	setLoopsToRandomize(n: number): void {
 		const clamped = Math.round(
@@ -156,7 +145,6 @@ export class MusicEngine {
 		)
 		this.settings.loopsToRandomize = clamped
 		this.loopsCompleted = 0
-		this.logSettingsChange("loopsToRandomize", clamped)
 	}
 
 	/**
@@ -173,22 +161,16 @@ export class MusicEngine {
 		const keyMoved =
 			prevKey.tonicTypeIdx !== newKey.tonicTypeIdx ||
 			prevKey.modeName !== newKey.modeName
-		if (keyMoved) {
-			const t = this.audio.currentTime
-			this.audio.diagnostics.recordKeyChange(t, newKey)
-			if (this.audio.isEnabled) {
-				this.audio.fadeAll(KEY_TRANSITION_FADE)
-				this.audio.diagnostics.recordKeyTransition(t, prevKey, newKey)
-				// Reset the progression to slot 0 so the new key emerges
-				// starting from the tonic chord.
-				this.loopsCompleted = 0
-				const chord = this.progression[0] ?? this.harmony.chord
-				this.harmony = {
-					chord,
-					slotIdx: 0,
-					cycleAt: t + this.settings.chordCycleSec,
-				}
-				this.audio.diagnostics.recordChordChange(t, chord.rootSemitones)
+		if (keyMoved && this.audio.isEnabled) {
+			this.audio.fadeAll(KEY_TRANSITION_FADE)
+			// Reset the progression to slot 0 so the new key emerges
+			// starting from the tonic chord.
+			this.loopsCompleted = 0
+			const chord = this.progression[0] ?? this.harmony.chord
+			this.harmony = {
+				chord,
+				slotIdx: 0,
+				cycleAt: this.audio.currentTime + this.settings.chordCycleSec,
 			}
 		}
 	}
@@ -213,7 +195,6 @@ export class MusicEngine {
 				slotIdx: nextSlot,
 				cycleAt: t + this.settings.chordCycleSec,
 			}
-			this.audio.diagnostics.recordChordChange(t, chord.rootSemitones)
 			// Wrap-around → one full loop completed.
 			if (nextSlot === 0) {
 				this.loopsCompleted++
@@ -284,15 +265,5 @@ export class MusicEngine {
 		}
 
 		return events
-	}
-
-	private logSettingsChange(field: keyof MusicSettings, value: number): void {
-		if (this.audio.isEnabled) {
-			this.audio.diagnostics.recordSettingsChange(
-				this.audio.currentTime,
-				field,
-				value,
-			)
-		}
 	}
 }

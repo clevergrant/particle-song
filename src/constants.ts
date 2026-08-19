@@ -216,10 +216,3 @@ export const MODES: readonly { name: string; intervals: readonly number[] }[] = 
 ]
 /** Fallback mode name used when the force matrix is empty. */
 export const DEFAULT_MODE_NAME = "Aeolian"
-
-// ── Diagnostics ───────────────────────────────────────────────────────
-export const DIAG_ENDPOINT = "/__music-log"
-export const DIAG_RESET_ENDPOINT = "/__music-log/reset"
-export const DIAG_FLUSH_INTERVAL_MS = 200
-/** Rounding factor for float values in JSONL records (4 decimals). */
-export const DIAG_ROUND_FACTOR = 10000
